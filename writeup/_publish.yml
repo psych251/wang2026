@@ -1,0 +1,4 @@
+- source: replication-report.qmd
+  posit-connect-cloud:
+    - id: "01a10ac6-0f2c-c606-4126-e3f6f15cd897"
+      url: "https://01a10ac6-0f2c-c606-4126-e3f6f15cd897.share.connect.posit.cloud/"

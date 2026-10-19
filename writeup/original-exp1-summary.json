@@ -1,0 +1,25 @@
+{
+  "source": "OSF xjhkf Experiment 1 analysis/data; source Rmd lines 124-129, 285-305, 925-946",
+  "published_n": 123,
+  "reproduced_finished_n": 123,
+  "reproduced_model_n": 123,
+  "reproduced_model_trials": 5892,
+  "unchosen_subject_n": 123,
+  "unchosen_subject_mean": 0.4346205962059621,
+  "unchosen_subject_sd": 0.2509137048776973,
+  "unchosen_cohens_d": -0.2605652960483198,
+  "descriptive": [
+    {
+      "pair_type": "chosen",
+      "n": 123,
+      "mean": 0.6243224932249323,
+      "sd": 0.2642771904592062
+    },
+    {
+      "pair_type": "unchosen",
+      "n": 123,
+      "mean": 0.4346205962059621,
+      "sd": 0.2509137048776973
+    }
+  ]
+}

@@ -48,30 +48,37 @@ exclusion rule, and the key comparison.
 #| include: false
 library(tidyverse)
 library(jsonlite)
-
-# Must match EXPERIMENT.id in experiment.js, and the --experiment you passed to the export.
-# Phase 2 runs under its own id, so its data never mix with Phase 1's.
-experiment_id        <- "framing-demo"
-experiment_id_phase2 <- "framing-demo-phase2"
+library(rstanarm)
+library(coda)
+library(pwr)
+options(mc.cores = min(4L, parallel::detectCores()))
+experiment_id <- Sys.getenv("PSYCH251_PHASE1_ID", "wang2026-exp1-pilot-a")
+experiment_id_phase2 <- Sys.getenv("PSYCH251_PHASE2_ID", "wang2026-phase2")
+analysis_input_files <- unlist(lapply(c(experiment_id, experiment_id_phase2), function(id)
+  file.path("..", "data", "raw", id, c("participants.csv", "trials.csv", "errors.csv"))))
 ```
 
 ```{r}
 #| label: original-study
 #| include: false
-# The original study's numbers, entered once and used by the power analysis, the Key
-# statistics table, and the side-by-side figures. Replace these with your original study's
-# values, and say in a comment exactly where in the paper each one comes from.
-#
-# Tversky & Kahneman (1981), Problem 1 (gain frame, N = 152): 72% chose the certain program,
-# 28% the risky one. Problem 2 (loss frame, N = 155): 22% certain, 78% risky. The paper
-# reports percentages, so the counts below are reconstructed from them.
+# Wang et al. (2026), section 3.2, Experiment 1 (N = 123).
+# Outcome is NS+: category paired with a rewarded originally CHOSEN item.
+# Unchosen-item inference predicts OR < 1; do not reverse this label.
+# Published central estimates and 95% HPD intervals are entered without
+# reconstructing individual-level data from rounded odds ratios.
+original_n <- 123L
 original <- tibble(
-  condition = c("gain", "loss"),
-  n         = c(152, 155),
-  risky     = round(c(0.28 * 152, 0.78 * 155))
+  pair_type = c("chosen", "unchosen"),
+  odds_ratio = c(2.01, 0.69),
+  lower = c(1.46, 0.52), upper = c(2.79, 0.91), N = original_n
 )
-original_p_gain <- original$risky[original$condition == "gain"] / original$n[original$condition == "gain"]
-original_p_loss <- original$risky[original$condition == "loss"] / original$n[original$condition == "loss"]
+original_trial_type_or <- c(estimate = 0.44, lower = 0.36, upper = 0.55)
+# Aggregate-only reproduction of original Rmd preprocessing/power calculation.
+# The source Rmd's section "Power analysis for Exp 2" operates on Exp1 data.
+original_summary <- fromJSON("original-exp1-summary.json")
+stopifnot(original_summary$reproduced_model_n == 123L,
+          original_summary$reproduced_model_trials == 5892L)
+original_d <- abs(original_summary$unchosen_cohens_d)
 ```
 
 ::: {.callout-note appearance="simple" icon="false"}
@@ -79,17 +86,17 @@ original_p_loss <- original$risky[original$condition == "loss"] / original$n[ori
 
 - **Original paper:** Wang, Z., Li, X., & Bakkour, A. (2026). The inferred value of unchosen options spreads to related items in memory. Cognition, 272, 106508. <https://doi.org/10.1016/j.cognition.2026.106508>
 - **Preregistration:** [OSF registration](https://osf.io/XXXXX) *(registered YYYY-MM-DD, before final data collection)*
-- **Live experiment:** <https://github.com/psych251/Wang2026> (take the study exactly as participants did)
-- **Repository:** <https://github.com/psych251/Wang2026> (experiment code, data, and this report)
+- **Live experiment:** <https://psych251.github.io/wang2026/> (take the study exactly as participants did)
+- **Repository:** <https://github.com/psych251/wang2026> (experiment code, data, and this report)
 :::
 
 # AI use statement
 
 | Tool and model | What it was used for | How you checked the output |
-|----------------|----------------------|----------------------------|
-|                |                      |                            |
-|                |                      |                            |
-|                |                      |                            |
+|------------------------|------------------------|------------------------|
+| ChatGPT (GPT-6.1 Sol) | Implementing the experimental paradigm | Compared the implementation against the original experiment code and tested with pilots to verify the task procedure and recorded data. |
+| ChatGPT (GPT-6.1 Sol) | Conducting the power analysis | Compared the code with the power analysis code for Experiment 2 of the original study. |
+| ChatGPT (GPT-6.1 Sol) | Preprocessing data and implementing analysis code, tables and figures | Need to be further checked with more datapoints. |
 
 I wrote all of the text in this report myself. AI tools were not used to write, rewrite or paraphrase it, and were not used to generate, alter, or impute any participant data. I take full responsibility for the content of this report, including any errors introduced by AI tools.
 
@@ -104,110 +111,150 @@ One row per study for the key comparison: the original, your Phase 1 replication
 ```{r}
 #| label: analysis-functions
 #| code-summary: "Show the analysis code (shared by Phase 1 and Phase 2)"
-
-# Load one phase's exported data and apply the exclusion rule. Returns NULL if that phase
-# has not been exported yet, which is how every section below knows to skip itself.
+#| cache: true
+#| cache.extra: !expr list(ids = c(experiment_id, experiment_id_phase2), hashes = tools::md5sum(analysis_input_files[file.exists(analysis_input_files)]), rstanarm = as.character(packageVersion("rstanarm")))
+# Source: OSF xjhkf, Experiment_1_analysis.Rmd, revised main model
+# ("Edit of the main model by Xinyue") and separate chosen/unchosen models.
+# Source-code preprocessing, including 300 < rating RT < 8000 ms, category
+# means rounded to 2 decimals, and absolute separately z-scored left/right
+# means, is reproduced. This differs from the paper's signed-difference prose.
+as_bool <- function(x) tolower(as.character(x)) %in% "true"
 read_phase <- function(id) {
   dir <- file.path("..", "data", "raw", id)
   if (!all(file.exists(file.path(dir, c("participants.csv", "trials.csv"))))) return(NULL)
-  participants <- read_csv(file.path(dir, "participants.csv"), show_col_types = FALSE)
-  trials       <- read_csv(file.path(dir, "trials.csv"), show_col_types = FALSE)
-  errors_path  <- file.path(dir, "errors.csv")
-  errors <- if (file.exists(errors_path)) read_csv(errors_path, show_col_types = FALSE) else tibble()
-
+  read_export <- function(name) read_csv(file.path(dir, name),
+    col_types = cols(.default = col_character()), show_col_types = FALSE)
+  participants <- read_export("participants.csv") |>
+    mutate(completed = as_bool(completed), practice_misses = as.numeric(practice_misses))
+  trials <- read_export("trials.csv")
+  errors <- if (file.exists(file.path(dir, "errors.csv"))) read_export("errors.csv") else tibble()
   complete <- participants |> filter(completed)
-
-  # Exclusion rule: replace with the rule you preregistered. Here: at least 6 of 8
-  # lexical-decision trials correct, and at least one speeded response at all (a session in
-  # which every speeded trial timed out is what a device without a keyboard produces).
-  ld <- trials |>
-    filter(task == "lexical_decision") |>
+  # Completed export flag replaces the original platform's nonempty unique_code.
+  # The Exp1 stopping criterion is three missed practice responses. No new
+  # memory/attention-accuracy exclusion threshold is introduced.
+  keep <- complete |> filter(!as_bool(qa_run), !as_bool(preview_run),
+                             coalesce(practice_misses, 0) < 3)
+  retained <- trials |> filter(participant_id %in% keep$participant_id)
+  ratings <- retained |> filter(task == "preference_rating") |>
+    mutate(rt = as.numeric(rt), rating = as.numeric(rating)) |>
+    filter(rt > 300, rt < 8000) |>
+    group_by(participant_id, category) |>
+    summarise(mean_rating = round(mean(rating, na.rm = TRUE), 2), .groups = "drop")
+  choices <- retained |> filter(task == "final_choice") |>
+    mutate(rt = as.numeric(rt), timed_out = as_bool(timed_out),
+      p_ns = if_else(timed_out, NA_integer_, as.integer(as_bool(chose_paired_reward))),
+      chosen_trial_centered = as.integer(pair_type == "unchosen")) |>
+    left_join(ratings |> rename(Left_mean_ratings = mean_rating),
+      by = c("participant_id", "left_category" = "category")) |>
+    left_join(ratings |> rename(Right_mean_ratings = mean_rating),
+      by = c("participant_id", "right_category" = "category")) |>
     group_by(participant_id) |>
-    summarise(ld_acc           = mean(as.logical(correct), na.rm = TRUE),
-              ld_all_timed_out = all(as.logical(timed_out)),
-              .groups = "drop")
-  checked <- complete |> left_join(ld, by = "participant_id")
-  keep <- checked |> filter(!is.na(ld_acc), !ld_all_timed_out, ld_acc >= 0.75)
-
+    mutate(z_score_norm_drate_by_outcome = abs(as.numeric(scale(Left_mean_ratings)) -
+                                               as.numeric(scale(Right_mean_ratings)))) |>
+    ungroup()
+  # A missed choice is missing, never silently interpreted as a right choice.
+  # All three current pilot runs have zero choice timeouts.
+  model_data <- choices |> filter(!is.na(p_ns), is.finite(z_score_norm_drate_by_outcome)) |>
+    mutate(pid = factor(participant_id))
   list(participants = participants, trials = trials, errors = errors,
-       complete = complete, keep = keep,
-       n_no_response = sum(checked$ld_all_timed_out %in% TRUE))
+    complete = complete, keep = keep, retained = retained, choices = choices,
+    model_data = model_data,
+    n_no_response = sum(vapply(split(choices$timed_out, choices$participant_id), all, logical(1))))
 }
 
-# The key comparison's raw counts: how many analysed participants chose the risky program
-# in each frame.
-risky_counts <- function(d) {
-  d$trials |>
-    filter(task == "framing", participant_id %in% d$keep$participant_id) |>
-    group_by(condition) |>
-    summarise(risky = sum(choice == "risky"), n = n(), .groups = "drop")
+fit_source_model <- function(data, formula) {
+  # Original analysis: normal(0,2.5), decov(regularization=1), seed123,
+  # four chains, 4000 iterations, first2000 warmup, random participant intercept.
+  fit <- rstanarm::stan_glmer(formula = formula, data = data,
+    family = binomial(link = "logit"),
+    prior = rstanarm::normal(0, 2.5),
+    prior_intercept = rstanarm::normal(0, 2.5),
+    prior_covariance = rstanarm::decov(regularization = 1),
+    chains = 4, iter = 4000, warmup = 2000, seed = 123, refresh = 0)
+  sampler <- rstan::get_sampler_params(fit$stanfit, inc_warmup = FALSE)
+  divergent <- sum(vapply(sampler, function(s) sum(s[, "divergent__"]), numeric(1)))
+  if (divergent > 0) {
+    # Diagnostic-only sampler adjustment; formula/priors/chains/iterations unchanged.
+    # The first source-default pilot fit had2 divergences in the chosen-only model.
+    fit <- update(fit, adapt_delta = 0.99, refresh = 0)
+    attr(fit, "tolerance_tightened") <- TRUE
+  }
+  fit
 }
-
-# The key statistic: difference in the proportion choosing the risky program (loss minus
-# gain) with a 95% CI, and the uncorrected chi-square, which is the same test. NULL until
-# both frames have at least one analysed participant.
-diff_ci <- function(counts) {
-  loss <- counts[counts$condition == "loss", ]
-  gain <- counts[counts$condition == "gain", ]
-  if (nrow(loss) == 0 || nrow(gain) == 0) return(NULL)
-  pt <- prop.test(c(loss$risky, gain$risky), c(loss$n, gain$n), correct = FALSE)
-  tibble(N = loss$n + gain$n,
-         estimate = unname(pt$estimate[1] - pt$estimate[2]),
-         ci_low = pt$conf.int[1], ci_high = pt$conf.int[2],
-         statistic = unname(pt$statistic), p = pt$p.value)
+fit_phase <- function(d) {
+  if (is.null(d) || n_distinct(d$model_data$pid) < 2) return(NULL)
+  x <- d$model_data
+  if (!all(c("chosen", "unchosen") %in% x$pair_type)) return(NULL)
+  fits <- list(
+    main = fit_source_model(x,
+      p_ns ~ chosen_trial_centered * z_score_norm_drate_by_outcome + (1 | pid)),
+    chosen = fit_source_model(filter(x, pair_type == "chosen"),
+      p_ns ~ z_score_norm_drate_by_outcome + (1 | pid)),
+    unchosen = fit_source_model(filter(x, pair_type == "unchosen"),
+      p_ns ~ z_score_norm_drate_by_outcome + (1 | pid)))
+  attr(fits, "N") <- n_distinct(x$pid)
+  fits
 }
-
-# Side-by-side figure: any number of studies on the same axes, in the order given.
-prop_ci <- function(x, n) {
-  ci <- prop.test(x, n, correct = FALSE)$conf.int
-  tibble(p = x / n, low = ci[1], high = ci[2])
+or_summary <- function(fit, term = "(Intercept)") {
+  draws <- as.matrix(fit)[, term]
+  hpdi <- coda::HPDinterval(coda::mcmc(draws), prob = 0.95)[1, ]
+  tibble(odds_ratio = exp(median(draws)), lower = exp(hpdi[1]), upper = exp(hpdi[2]),
+    posterior_probability_below_one = mean(draws < 0))
+}
+model_summary <- function(fits) {
+  if (is.null(fits)) return(tibble())
+  bind_rows(or_summary(fits$chosen) |> mutate(pair_type = "chosen"),
+            or_summary(fits$unchosen) |> mutate(pair_type = "unchosen")) |>
+    mutate(N = attr(fits, "N"))
+}
+diagnostics <- function(fits) {
+  if (is.null(fits)) return(tibble())
+  imap_dfr(fits, function(fit, name) {
+    summary <- summary(fit, probs = c(0.025, 0.975))
+    sampler <- rstan::get_sampler_params(fit$stanfit, inc_warmup = FALSE)
+    tibble(Model = name, `Maximum Rhat` = max(summary[, "Rhat"], na.rm = TRUE),
+      `Minimum effective N` = min(summary[, "n_eff"], na.rm = TRUE),
+      Divergences = sum(vapply(sampler, function(s) sum(s[, "divergent__"]), numeric(1))),
+      `Sampler tolerance tightened` = isTRUE(attr(fit, "tolerance_tightened")))
+  })
 }
 comparison_plot <- function(...) {
   studies <- list(...)
   studies <- studies[!map_lgl(studies, ~ is.null(.x) || nrow(.x) == 0)]
-  df <- imap_dfr(studies, ~ mutate(.x, Study = .y)) |>
-    rowwise() |> mutate(prop_ci(risky, n)) |> ungroup() |>
-    mutate(Study = factor(Study, levels = names(studies)), label = sprintf("n = %d", n))
-  fills <- setNames(c("grey55", "#1E6E76", "#B8792A")[seq_along(studies)], names(studies))
-  dodge <- position_dodge(width = 0.8)
-  ggplot(df, aes(x = condition, y = p, fill = Study)) +
-    geom_col(position = dodge, width = 0.75) +
-    geom_errorbar(aes(ymin = low, ymax = high), position = dodge, width = 0.2) +
-    geom_text(aes(y = 0.02, label = label), position = dodge, vjust = 0, size = 3, colour = "white") +
-    scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
-    scale_fill_manual(values = fills) +
-    labs(x = "Frame", y = "Chose the risky program", fill = NULL) +
-    theme_minimal(base_size = 12) +
-    theme(legend.position = "top")
+  plotted <- imap_dfr(studies, ~ mutate(.x, Study = .y)) |>
+    mutate(Study = factor(Study, levels = names(studies)),
+      pair_type = factor(pair_type, levels = c("chosen", "unchosen")))
+  ggplot(plotted, aes(x = pair_type, y = odds_ratio, ymin = lower, ymax = upper)) +
+    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey50") +
+    geom_pointrange(colour = "#1E6E76") + scale_y_log10() +
+    facet_wrap(~Study, nrow = 1) +
+    labs(x = "Category-pair type", y = "Odds of choosing NS+ (log scale)") +
+    theme_minimal(base_size = 12)
 }
-
 phase1 <- read_phase(experiment_id)
 phase2 <- read_phase(experiment_id_phase2)
-have_data   <- !is.null(phase1)
+have_data <- !is.null(phase1)
 have_phase2 <- !is.null(phase2)
+phase1_fits <- fit_phase(phase1)
+phase2_fits <- fit_phase(phase2)
+phase1_estimates <- model_summary(phase1_fits)
+phase2_estimates <- model_summary(phase2_fits)
+format_hpdi <- function(lower, upper) ifelse(is.na(lower) | is.na(upper), "Not available",
+  paste0("[", formatC(lower, format = "g", digits = 3), ", ", formatC(upper, format = "g", digits = 3), "]"))
 ```
 
 ```{r}
 #| label: key-stats
 #| echo: false
-fmt_row <- function(study, r) {
-  if (is.null(r)) {
-    return(tibble(Study = study, N = "", `Effect (loss − gain)` = "not yet collected",
-                  `95% CI` = "", `χ²(1)` = "", p = ""))
-  }
-  tibble(Study = study, N = as.character(r$N),
-         `Effect (loss − gain)` = sprintf("%.0f points", 100 * r$estimate),
-         `95% CI` = sprintf("[%.0f, %.0f]", 100 * r$ci_low, 100 * r$ci_high),
-         `χ²(1)` = sprintf("%.2f", r$statistic),
-         p = format.pval(r$p, digits = 2, eps = 0.001))
-}
-bind_rows(
-  fmt_row("Original", diff_ci(original)),
-  fmt_row("Phase 1: replication", if (have_data) diff_ci(risky_counts(phase1))),
-  fmt_row("Phase 2: extension", if (have_phase2) diff_ci(risky_counts(phase2)))
-) |>
-  knitr::kable(align = "lrlllr",
-               caption = "Key comparison: difference in the percentage of analysed participants choosing the risky program, loss frame minus gain frame.")
+key_rows <- bind_rows(original |> mutate(Study = "Original: Exp1"),
+  phase1_estimates |> mutate(Study = "Phase 1: Pilot A"),
+  if (nrow(phase2_estimates)) phase2_estimates |> mutate(Study = "Phase 2") else
+    tibble(Study = "Phase 2: not yet collected", pair_type = "unchosen", N = NA_integer_,
+           odds_ratio = NA_real_, lower = NA_real_, upper = NA_real_)) |>
+  filter(pair_type == "unchosen")
+key_rows |> transmute(Study, N, OR = round(odds_ratio, 3),
+  `95% HPDI` = format_hpdi(lower, upper)) |>
+  knitr::kable(caption = "Unchosen-category model intercept: odds of choosing the category paired with a rewarded chosen item. OR below1 indicates the predicted inverse preference. Original: Wang et al. (2026), section3.2; pilot: posterior median OR and exponentiated log-odds HPDI.")
 ```
 
 # Phase 1: Replication
@@ -226,87 +273,76 @@ A possible extension was to also test choice and outcome memory to examine wheth
 
 ### Power analysis
 
-::: {.callout-tip icon="false"}
-## Guidance
-
-Report the original effect size, the sample needed for 80%, 90% and 95% power to detect it, and the sample you chose and why. The table below is computed from the original study's numbers entered at the top of this file.
-
-Original effects are usually overestimates, so powering to the original effect tends to produce an underpowered replication. One widely used alternative is to collect 2.5 times the original sample, which gives 80% power to detect an effect the original study had only 33% power to detect (Simonsohn, 2015; Experimentology §10.4). Say which approach you used, and what the course's participant budget allowed.
-:::
-
 ```{r}
 #| label: power
+# Source Exp1 Rmd lines925-946: one-sample, two-sided t-test against0.5
+# on participant-level unchosen NS+ proportions; Cohen d=t/sqrt(N).
+# This is the authors' planning approximation, NOT power for stan_glmer.
+# Basis is original data only, never the three-person pilot effect.
 power_rows <- map_dfr(c(0.80, 0.90, 0.95), function(pw) {
-  n <- power.prop.test(p1 = original_p_gain, p2 = original_p_loss,
-                       power = pw, sig.level = 0.05)$n
-  tibble(power = scales::percent(pw), n_per_group = ceiling(n), n_total = 2 * ceiling(n))
+  out <- pwr::pwr.t.test(d = original_d, sig.level = 0.05, power = pw,
+                       type = "one.sample", alternative = "two.sided")
+  tibble(Power = scales::percent(pw), `Required participants` = ceiling(out$n))
 })
-
-original_effect <- original_p_loss - original_p_gain
-two_and_half <- ceiling(2.5 * original$n)
-
-knitr::kable(power_rows, col.names = c("Power", "N per frame", "N total"),
-             caption = sprintf(
-               "Sample needed to detect the original effect (risky choice: %.0f%% gain vs %.0f%% loss, a difference of %.0f points), two-sided alpha = .05.",
-               100 * original_p_gain, 100 * original_p_loss, 100 * original_effect))
+power_rows |> knitr::kable(caption = sprintf(
+  "Original-code planning approximation: one-sample two-sided t-test, alpha=.05, absolute Cohen d=%.4f, based on original Exp1 unchosen proportions (N=%d). Not a direct power calculation for the Bayesian hierarchical model.",
+  original_d, original_summary$unchosen_subject_n))
+# Compatibility for the template's inline expressions; student must replace
+# its obsolete gain/loss prose. This within-person design has ONE sample N.
+two_and_half <- ceiling(2.5 * original_n)
 ```
 
-For comparison, 2.5 times the original sample would be `r two_and_half[1]` in the gain frame and `r two_and_half[2]` in the loss frame (`r sum(two_and_half)` in total).
+For comparison, 2.5 times the original sample would be 308 (rounded up from 307.5) usable participants in total.
 
 ### Planned sample
 
-::: {.callout-tip icon="false"}
-## Guidance
-
-Planned sample size and stopping rule, sampling frame (for example, "US residents on Prolific, fluent in English, 18 or older"), known demographics, and any preselection or screening. The stopping rule should be data-independent: "collect until N participants pass the exclusion criteria below" rather than "until the result is clear".
-:::
+The experiment will recruit U.S. residents aged 18-35 who are fluent in English through Prolific. Participants must complete the experiment on a computer with a keyboard. Those who fail to respond on three timed practice trials or do not complete the experiment will be excluded. Data collection will continue until 118 participants pass the exclusion criteria, providing approximately 80% power, or until the class budget is reached, whichever comes first.
 
 ### Materials
 
-::: {.callout-tip icon="false"}
-## Guidance
+Wang et al. (2026) described the stimuli as follows:
 
-All materials. You can quote the original article directly: put the text in quotation marks and note that it was followed precisely, or quote it and point out the exceptions. Link to the live experiment above rather than pasting screenshots of every screen.
-:::
+> “The image stimuli were taken from the DinoLab Object Database” (p. 2, §2.2).
+
+> “128 images of common objects from 8 semantic categories (16 objects per category): land mammals, ocean creatures, vegetables, fruits, sports, vehicles, musical instruments, and buildings.” (p. 2, §2.2).
+
+The replication uses the same set of stimuli downloaded from the DinoLab Object Database, with one substitution: an image of a cinnamon bun was replaced with an image of a shrimp in the ocean creatures category.
+
+[Stimulus files](https://github.com/psych251/wang2026/tree/main/stimuli)
 
 ### Procedure
 
-::: {.callout-tip icon="false"}
-## Guidance
+1.  Consent and introduction: Participants provide Stanford course consent and receive instructions to build a valuable stamp portfolio by selecting pictures. Adaptation: Course consent and reconstructed instructions (which will be replaced by the original instructions if authors share the materials).
 
-As for Materials: quote the original where you can and point out the exceptions. Describe the sequence a participant experiences, from consent to debrief, and how long it takes.
-:::
+2.  Pre-experimental phase: Participants rate 24 randomized pictures (three from each of eight categories) “based on their personal preferences” on a 0-100 scale.
+
+3.  Deliberation phase: Participants “choose the images they predicted would be placed on the most valuable stamp” across four pairs repeated in two practice rounds and one final round (12 choices in total). Practice choices are timed (5s), while final choices are untimed. The second practice round requires written justifications for their choices. Three missed practice responses terminate the session.
+
+4.  Choice Outcome phase: Four chosen pictures receive randomly assigned outcomes (two rewarded, two unrewarded), with pictures shown alone for 1 s followed by “reward or no reward” for 2 s with pictures. Unchosen pictures receive no feedback.
+
+5.  Final Decision phase: Participants make 48 choices (24 chosen-category and 24 unchosen-category pairs) using six new pictures per category, each presented twice. Participants need to press keys shown on the screen to pass occasional attention checks.
+
+6.  Surprise Memory phase: Participants respond to eight old/new recognition trials (four chosen and four unseen pictures; 1 = old, 0 = new). When an original picture is correctly recognized, participants need to choose its paired partner from four options.
+
+7.  Optional final questions: Participants answer demographic, instruction-clarity, and feedback questions. Adaptation: Course-template questions.
+
+8.  Debrief and completion: Participants learn the study purpose and that outcomes were randomly assigned and complete submitting their responses. Adaptation: Course-specific debrief.
+
+Participants are expected to finish the entire experiment in 10-20 minutes.
 
 ### Analysis plan
 
-::: {.callout-tip icon="false"}
-## Guidance
+**Key analysis of interest.** Participants are predicted to prefer novel items from unchosen categories whose chosen counterparts received no reward, than those whose counterparts were rewarded. It will be tested using a multilevel Bayesian logistic regression on the 24 unchosen-category decisions per participant, controlling for initial category preferences and including a random intercept for each participant. The effect size will be reported as an odds ratio with a 95% credible interval.
 
-The analysis strategy, as close to the original as possible: data cleaning rules, exclusion rules, covariates, and the model or test. Original papers often do not spell this out; say where you had to make a choice and what you chose.
-
-**State the key analysis of interest explicitly.** That is the single test your replication stands or falls on, and it must match your preregistration. You can pre-specify additional analyses here too.
-:::
-
-**Key analysis of interest.** The proportion of participants choosing the risky program is higher in the loss frame than in the gain frame, tested with a chi-square test of independence on the 2 × 2 table of frame by choice. The effect size is the difference in the proportion choosing the risky program (loss minus gain), with a 95% confidence interval.
-
-**Exclusions.** Participants are excluded if they did not complete the study, if they answered no speeded trial at all (every lexical-decision trial timed out, the signature of a device without a keyboard), or if they answered fewer than 6 of the 8 lexical-decision trials correctly.
+**Exclusions.** Participants are excluded if they failed to respond to three times practice trials, or if they did not complete the study.
 
 ### Differences from the original study
 
-::: {.callout-tip icon="false"}
-## Guidance
-
-Every known difference in sample, setting, procedure, materials, and analysis, one per row. Minimizing differences is the goal, but some always remain. For each one, say whether it is expected to matter, based on claims in the original article or later research on when the effect does and does not appear. The rows below are the demo's real differences and show the level of detail expected; replace them with yours.
-:::
-
 | Aspect | Original study | This replication | Expected to matter? |
 |------------------|------------------|------------------|------------------|
-| Sample | University students in Stanford and British Columbia classrooms | Adults recruited on Prolific | Possibly. Framing effects have been found in both student and general samples, but their size varies across populations. |
-| Setting | Paper questionnaire in class | Online, unsupervised, on the participant's own computer | Unlikely for a single vignette, though attention may be lower online. |
-| Wording | "an unusual Asian disease" | "an unusual disease" | Unlikely. The ethnonym is incidental to the manipulation and dated. |
-| Design | Between subjects: each participant saw one frame | Between subjects, randomly assigned | No. |
-| Response | Circle a program on paper | Click a button | Unlikely. |
-| Other tasks | Problems presented alongside other questionnaire items | Followed by a short lexical-decision task used as an attention check | Unlikely: the check comes after the choice. |
+| Sample | University of Chicago SONA and MTurk/CloudResearch | Prolific | Unlikely. Participants will be recruited using the same eligibility criteria. |
+| Stimuli | Ocean creatures category includes a cinnamon bun | Replaced the cinnamon bun with a shrimp | Unlikely. The replacement better matches the intended semantic category. |
+| Instructions | Instructions provided in .svg files (exact wording unknown) | Reconstructed instructions based on the original paper | Unlikely though there is a chance differences in wording could affect how participants understand the task. |
 
 ### Methods addendum (post data collection)
 
@@ -338,67 +374,45 @@ if (!have_data) {
 ```{r}
 #| label: phase1-data
 #| eval: !expr have_data
-# Loaded and excluded by read_phase(), under Key statistics, so Phase 1 and Phase 2 share one
-# exclusion rule.
-participants  <- phase1$participants
-trials        <- phase1$trials
-errors        <- phase1$errors
-complete      <- phase1$complete
-keep          <- phase1$keep
+participants <- phase1$participants
+trials <- phase1$trials
+errors <- phase1$errors
+complete <- phase1$complete
+keep <- phase1$keep
 n_no_response <- phase1$n_no_response
 ```
 
 ```{r}
 #| label: funnel
 #| eval: !expr have_data
-funnel_levels <- c("Started", "Completed", "Passed exclusion criteria")
-bind_rows(
-  participants |> mutate(step = "Started"),
-  complete     |> mutate(step = "Completed"),
-  keep         |> mutate(step = "Passed exclusion criteria")
-) |>
-  mutate(step = factor(step, levels = funnel_levels)) |>
-  count(step, condition, .drop = FALSE) |>
-  pivot_wider(names_from = condition, values_from = n, values_fill = 0) |>
-  mutate(Total = rowSums(across(-step))) |>
-  rename(Step = step) |>
-  knitr::kable(caption = "Participants at each step, by frame. Differences between frames in attrition or exclusion are a threat to validity and should be discussed.")
+tibble(Step = c("Recorded sessions", "Completed sessions", "Retained pilot volunteers", "Participants with usable model rows"),
+  N = c(nrow(participants), nrow(complete), nrow(keep), n_distinct(phase1$model_data$pid))) |>
+  knitr::kable(caption = "Session-level accounting; page loads include incomplete checks, not additional recruited volunteers.")
+phase1$choices |> group_by(pair_type) |>
+  summarise(`Recorded decisions` = n(), `Choice timeouts` = sum(timed_out), .groups = "drop") |>
+  left_join(phase1$model_data |> count(pair_type, name = "Usable model rows"), by = "pair_type") |>
+  knitr::kable(caption = "Decision rows before and after the source-code rating-covariate filter.")
 ```
 
 ```{r}
 #| label: sample-text
 #| eval: !expr have_data
 #| echo: false
-#| results: asis
-cat(sprintf("Of %d participants who started, %d completed the study and %d met the exclusion criteria.",
-            nrow(participants), nrow(complete), nrow(keep)))
-if (n_no_response > 0) {
-  cat(sprintf(" %d completed session(s) contained no response to any speeded trial and were excluded on that basis.",
-              n_no_response))
-}
-if (nrow(keep) == 0) cat(" No participants remain for analysis yet, so the results below are empty.")
-cat("\n")
+tibble(`Completed volunteers` = nrow(complete), `Retained volunteers` = nrow(keep),
+       `Model participants` = n_distinct(phase1$model_data$pid),
+       `Usable final decisions` = nrow(phase1$model_data)) |> knitr::kable()
 ```
 
 ```{r}
 #| label: demographics
 #| eval: !expr have_data
-demo <- trials |>
-  filter(task == "demographics", participant_id %in% keep$participant_id) |>
-  mutate(resp = map(response, ~ fromJSON(.x))) |>
-  transmute(
-    participant_id,
-    age    = map_dbl(resp, ~ as.numeric(.x$age %||% NA)),
-    gender = map_chr(resp, ~ as.character(.x$gender %||% NA))
-  )
-
-if (nrow(demo) > 0) {
-  demo |>
-    summarise(N = n(), `Mean age` = round(mean(age, na.rm = TRUE), 1),
-              `SD age` = round(sd(age, na.rm = TRUE), 1),
-              `Age not given` = sum(is.na(age))) |>
-    knitr::kable(caption = "Age of the analysed sample.")
-}
+demo <- phase1$retained |> filter(task == "demographics") |>
+  mutate(resp = map(response, fromJSON),
+    age = map_dbl(resp, ~ suppressWarnings(as.numeric(.x$age %||% NA))))
+if (nrow(demo)) demo |> summarise(N = n(),
+  `Mean age` = if (all(is.na(age))) NA_real_ else mean(age, na.rm = TRUE),
+  `SD age` = sd(age, na.rm = TRUE), `Age missing` = sum(is.na(age))) |>
+  knitr::kable(digits = 2, caption = "Optional age responses; missing answers are not exclusion criteria.")
 ```
 
 #### Deviations from the preregistered plan
@@ -424,21 +438,20 @@ Data preparation follows the analysis plan. Loading and exclusions are done by t
 ```{r}
 #| label: confirmatory
 #| eval: !expr have_data
-framing <- trials |>
-  filter(task == "framing", participant_id %in% keep$participant_id) |>
-  select(participant_id, condition, choice)
-risky <- risky_counts(phase1)
-tab <- table(Frame = framing$condition, Choice = framing$choice)
-
-if (all(dim(tab) == c(2, 2))) {
-  # No continuity correction, so this test and the effect-size interval below agree: the
-  # uncorrected 2 x 2 chi-square is the same test as the two-proportion comparison.
-  print(tab)
-  print(chisq.test(tab, correct = FALSE))
-} else {
-  message("Chi-square not run: the frame-by-choice table is ", paste(dim(tab), collapse = " x "),
-          ". It needs both frames and both choices; with ", nrow(framing),
-          " participant(s) in the analysis set this is expected.")
+#| results: asis
+if (!is.null(phase1_fits)) {
+  cat("```text\n")
+  print(phase1_fits$main, digits = 3)
+  print(phase1_fits$unchosen, digits = 3)
+  cat("\n```\n\n")
+  main_fixed <- rstanarm::fixef(phase1_fits$main)
+  fixed_table <- map_dfr(names(main_fixed), function(term) or_summary(phase1_fits$main, term) |> mutate(Term = term)) |>
+    select(Term, everything())
+  cat(knitr::kable(fixed_table, digits = 3, caption = "Revised original main model: NS+ choice by pair type, rating covariate, and their interaction."), sep = "\n")
+  cat("\n\n")
+  cat(knitr::kable(diagnostics(phase1_fits), digits = 3,
+    caption = "MCMC diagnostics: inspect Rhat, effective sample sizes, and divergences before interpretation."), sep = "\n")
+  cat("\n\n")
 }
 ```
 
@@ -453,36 +466,23 @@ Judge the replication on effect sizes, not only on whether the key test is signi
 ```{r}
 #| label: comparison
 #| eval: !expr have_data
-orig <- diff_ci(original)
-rep  <- diff_ci(risky)
-
-if (!is.null(rep)) {
-  bind_rows(orig |> mutate(Study = "Original"), rep |> mutate(Study = "Phase 1: replication")) |>
-    transmute(Study, N,
-              `Difference (loss − gain)` = sprintf("%.0f points", 100 * estimate),
-              `95% CI` = sprintf("[%.0f, %.0f]", 100 * ci_low, 100 * ci_high),
-              p = format.pval(p, digits = 2, eps = 0.001)) |>
-    knitr::kable(caption = "Effect size: difference in the percentage choosing the risky program.")
-} else {
-  message("Replication effect size not computed yet: need at least one analysed participant in each frame.")
-}
+bind_rows(original |> mutate(Study = "Original: Exp1"),
+          phase1_estimates |> mutate(Study = "Phase 1: Pilot A")) |>
+  transmute(Study, `Pair type` = pair_type, N, OR = round(odds_ratio, 3),
+            `95% HPDI` = format_hpdi(lower, upper)) |>
+  knitr::kable(caption = "Separate chosen/unchosen model intercepts, adjusted using the source-code rating covariate. Original published OR; pilot posterior median OR.")
 ```
 
 ```{r}
 #| label: comparison-verdict
 #| eval: !expr have_data
 #| echo: false
-#| results: asis
-if (!is.null(rep)) {
-  excludes_zero <- rep$ci_low > 0 | rep$ci_high < 0
-  includes_orig <- orig$estimate >= rep$ci_low & orig$estimate <= rep$ci_high
-  cat(sprintf(
-    "The replication's 95%% interval %s zero and %s the original estimate of %.0f points. ",
-    if (excludes_zero) "excludes" else "includes",
-    if (includes_orig) "includes" else "does not include",
-    100 * orig$estimate))
-  cat("These two facts are the starting point for the summary in the Discussion, not the conclusion.\n")
-}
+if (nrow(phase1_estimates)) phase1_estimates |>
+  filter(pair_type == "unchosen") |>
+  transmute(`Predicted direction (OR<1)` = odds_ratio < 1,
+    `95% HPDI below1` = upper < 1,
+    `95% HPDI includes original0.69` = lower <= 0.69 & upper >= 0.69) |>
+  knitr::kable(caption = "Pilot diagnostics only; three non-naive volunteers do not establish a replication outcome.")
 ```
 
 ::: {.callout-tip icon="false"}
@@ -512,10 +512,10 @@ Whichever you choose, use the same measure, scale, condition order and error-bar
 ```{r}
 #| label: fig-comparison
 #| eval: !expr have_data
-#| fig-cap: "Percentage choosing the risky program in each frame, original study and Phase 1 replication. Error bars are 95% confidence intervals."
-#| fig-width: 7
+#| fig-cap: "Original Experiment1 (Wang et al.,2026, section3.2) and Pilot A. Points are model-intercept odds ratios for choosing NS+; bars are95% HPD intervals on log odds, exponentiated. Original points use published estimates; pilot points use posterior medians. All panels use the same scale. The dashed line is OR=1."
+#| fig-width: 8
 #| fig-height: 4
-comparison_plot(Original = original, `Phase 1: replication` = risky)
+comparison_plot(`Original: Exp1` = original, `Pilot A` = phase1_estimates)
 ```
 
 ### Exploratory analyses
@@ -529,19 +529,17 @@ Any follow-up analyses (optional). Label them clearly as exploratory: they were 
 ```{r}
 #| label: exploratory-rt
 #| eval: !expr have_data
-ld <- trials |>
-  filter(task == "lexical_decision", participant_id %in% keep$participant_id) |>
-  mutate(correct = as.logical(correct), is_word = as.logical(is_word), rt = as.numeric(rt)) |>
-  filter(correct, !is.na(rt))
-
-if (nrow(ld) > 0) {
-  ld |>
-    group_by(`Real word` = is_word) |>
-    summarise(`Mean RT (ms)` = round(mean(rt)), `SD (ms)` = round(sd(rt)), Trials = n(), .groups = "drop") |>
-    knitr::kable(caption = "Exploratory: lexical-decision response times, correct trials only.")
-} else {
-  message("No correct lexical-decision trials with a response time yet.")
-}
+phase1$choices |> filter(!timed_out, !is.na(rt)) |> group_by(pair_type) |>
+  summarise(`Mean RT (ms)` = mean(rt), `SD RT (ms)` = sd(rt), Trials = n(), .groups = "drop") |>
+  knitr::kable(digits = 1, caption = "Descriptive final-choice RTs; no additional exploratory model fitted.")
+memory_checks <- phase1$retained |> filter(task == "item_memory") |>
+  group_by(participant_id) |> summarise(`Item accuracy` = mean(as_bool(correct)), .groups = "drop")
+association_checks <- phase1$retained |> filter(task == "associative_memory") |>
+  group_by(participant_id) |> summarise(`Association accuracy` = mean(as_bool(correct)), .groups = "drop")
+memory_checks |> left_join(association_checks, by = "participant_id") |>
+  summarise(`Mean item accuracy` = mean(`Item accuracy`),
+            `Mean conditional association accuracy` = mean(`Association accuracy`, na.rm = TRUE)) |>
+  knitr::kable(digits = 3, caption = "Descriptive memory checks; associative accuracy is conditional on recognizing the original chosen cue.")
 ```
 
 ```{r}
@@ -624,43 +622,10 @@ Justify the Phase 2 sample, and **state how you expect the estimate and its prec
 
 ```{r}
 #| label: phase2-power
-phase2_n_per_group <- 150   # planned analysed participants per condition in Phase 2
-
-p1_counts <- if (have_data) risky_counts(phase1)
-p1_stats  <- if (have_data) diff_ci(p1_counts)
-basis <- if (!is.null(p1_stats)) {
-  list(gain = p1_counts$risky[p1_counts$condition == "gain"] / p1_counts$n[p1_counts$condition == "gain"],
-       loss = p1_counts$risky[p1_counts$condition == "loss"] / p1_counts$n[p1_counts$condition == "loss"],
-       source = "Phase 1")
-} else {
-  list(gain = original_p_gain, loss = original_p_loss, source = "the original study")
-}
-
-# Expected 95% CI half-width on the difference at n per condition.
-half_width <- function(n) 1.96 * sqrt(basis$gain * (1 - basis$gain) / n + basis$loss * (1 - basis$loss) / n)
-power_at <- function(n, p1, p2) {
-  tryCatch(power.prop.test(n = n, p1 = p1, p2 = p2, sig.level = 0.05)$power, error = function(e) NA)
-}
-
-rows <- tibble(
-  Study = c(if (!is.null(p1_stats)) "Phase 1 (actual)", "Phase 2 (planned)"),
-  `N analysed` = c(if (!is.null(p1_stats)) p1_stats$N, 2 * phase2_n_per_group),
-  `95% CI half-width` = c(if (!is.null(p1_stats)) sprintf("±%.0f points", 100 * (p1_stats$ci_high - p1_stats$ci_low) / 2),
-                          sprintf("±%.0f points (expected)", 100 * half_width(phase2_n_per_group)))
-)
-knitr::kable(rows, caption = sprintf("Precision of the key estimate, Phase 2 expected values based on %s.", basis$source))
-
-tibble(
-  `Effect to detect` = c(sprintf("Original: %.0f points", 100 * (original_p_loss - original_p_gain)),
-                         if (!is.null(p1_stats)) sprintf("Phase 1: %.0f points", 100 * p1_stats$estimate),
-                         sprintf("Half the original: %.0f points", 50 * (original_p_loss - original_p_gain))),
-  `Power at planned N` = scales::percent(c(
-    power_at(phase2_n_per_group, original_p_gain, original_p_loss),
-    if (!is.null(p1_stats)) power_at(phase2_n_per_group, basis$gain, basis$loss),
-    power_at(phase2_n_per_group, original_p_gain, original_p_gain + (original_p_loss - original_p_gain) / 2)
-  ), accuracy = 1)
-) |>
-  knitr::kable(caption = sprintf("Power of the Phase 2 key test at %d per condition, two-sided alpha = .05.", phase2_n_per_group))
+# Phase2 design/sample have not been selected. Do not retain the demo's
+# invented150-per-group plan or power based on a three-person pilot effect.
+phase2_planned_n <- NA_integer_
+tibble(`Phase2 planned N` = phase2_planned_n) |> knitr::kable(na = "Not specified")
 ```
 
 ## Analysis plan
@@ -693,27 +658,18 @@ if (!have_phase2) {
 ```{r}
 #| label: phase2-results
 #| eval: !expr have_phase2
-p2_counts <- risky_counts(phase2)
-p2_stats  <- diff_ci(p2_counts)
-cat(sprintf("Phase 2: %d started, %d completed, %d analysed.\n",
-            nrow(phase2$participants), nrow(phase2$complete), nrow(phase2$keep)))
-if (!is.null(p2_stats)) {
-  p_text <- if (p2_stats$p < 0.001) "p < .001" else sprintf("p = %.3f", p2_stats$p)
-  cat(sprintf("Key comparison: %.0f points [%.0f, %.0f], chi-square(1) = %.2f, %s.\n",
-              100 * p2_stats$estimate, 100 * p2_stats$ci_low, 100 * p2_stats$ci_high,
-              p2_stats$statistic, p_text))
-}
+model_summary(phase2_fits) |> knitr::kable(digits = 3)
+diagnostics(phase2_fits) |> knitr::kable(digits = 3)
 ```
 
 ```{r}
 #| label: fig-phase2
 #| eval: !expr have_phase2
-#| fig-cap: "Percentage choosing the risky program in each frame: original study, Phase 1 replication, and Phase 2 extension. Error bars are 95% confidence intervals."
-#| fig-width: 8
+#| fig-cap: "NS+ choice odds ratios and95% HPD intervals: original Experiment1, Phase1, and Phase2."
+#| fig-width: 9
 #| fig-height: 4
-comparison_plot(Original = original,
-                `Phase 1: replication` = if (have_data) risky_counts(phase1),
-                `Phase 2: extension` = risky_counts(phase2))
+comparison_plot(`Original: Exp1` = original,
+                `Phase1` = phase1_estimates, `Phase2` = phase2_estimates)
 ```
 
 ## Discussion
@@ -732,4 +688,4 @@ Compare Phase 2 with Phase 1 and with the original, using the Key statistics tab
 Edit the statement below to match what you are actually sharing. Anonymized data and all code should be public; if something cannot be shared, say what and why.
 :::
 
-The experiment code, the anonymized data, and the code that produces every number in this report are available at <https://github.com/psych251/your-repo>. The experiment itself can be taken at <https://psych251.github.io/your-repo/>. The data contain no names, email addresses, IP addresses, or Prolific IDs; the file linking participants to their Prolific IDs is kept privately for payment and is not shared.
+The experiment code, the anonymized data, and the code that produces every number in this report are available at <https://github.com/psych251/wang2026>. The experiment itself can be taken at <https://psych251.github.io/wang2026/>. The data contain no names, email addresses, IP addresses, or Prolific IDs; the file linking participants to their Prolific IDs is kept privately for payment and is not shared.
