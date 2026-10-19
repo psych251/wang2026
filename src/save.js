@@ -264,12 +264,13 @@
      * Call from jsPsych's on_finish. Flushes remaining trials, marks the participant
      * complete, waits for all writes, and returns { ok, mode, failed }.
      */
-    async finish(jsPsych) {
+    async finish(jsPsych, outcome = {}) {
       const full = jsPsych ? jsPsych.data.get().json() : JSON.stringify(this.allTrials);
       if (this.mode !== "offline") {
         this.flush();
         const update = {
-          completed: true,
+          completed: outcome.completed !== false,
+          termination_reason: outcome.termination_reason || null,
           ended_at: this.fb.serverTimestamp(),
           client_ended_at: new Date().toISOString(),
           n_trials: this.trialCount,

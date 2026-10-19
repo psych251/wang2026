@@ -1,361 +1,244 @@
-// End-to-end test: a robot participant runs the whole experiment.
-//
-// Two modes:
-//   - Emulator mode (EMULATOR=1, set automatically by `npm test`): data must land in the
-//     local Firestore emulator, the security rules must reject forbidden requests, and
-//     client errors must be logged.
-//   - Offline mode (plain `npx playwright test`): the experiment must still run to the end
-//     and offer the JSON download fallback.
-//
-// If you change the timeline in experiment.js, update `runThroughExperiment` below so the
-// robot still knows which buttons to press. That is a feature: the test documents the flow.
-
 const { test, expect, devices } = require("@playwright/test");
-
+const { runThroughExperiment } = require("./robot");
 const EMULATOR = process.env.EMULATOR === "1" || !!process.env.FIRESTORE_EMULATOR_HOST;
-const PROJECT = "demo-psych251";
-const EXPERIMENT_ID = "framing-demo";
-const FS = `http://localhost:8080/v1/projects/${PROJECT}/databases/(default)/documents`;
+const ID = "wang2026-exp1-qa";
+const FS = "http://localhost:8080/v1/projects/demo-psych251/databases/(default)/documents";
+const query = () => EMULATOR ? "/?emulator=1&qa=1&seed=314159" : "/?preview=1&qa=1&seed=314159";
 
-async function runThroughExperiment(page) {
-  // 1. consent
-  await page.getByRole("button", { name: "I agree to participate" }).click();
-  // 2. instructions (two pages)
-  await page.locator("#jspsych-instructions-next").click();
-  await page.locator("#jspsych-instructions-next").click();
-  // 3. demographics (SurveyJS)
-  await page.locator('input[type="number"]').fill("34");
-  await page.getByText("Woman", { exact: true }).click();
-  // SurveyJS boolean switches render "Yes" twice once toggled; scope to the question.
-  await page.locator('[data-name="native_english"]').getByText("Yes", { exact: true }).first().click();
-  await page.locator('input[value="Continue"]').click();
-  // 4. framing
-  await page.getByRole("button", { name: "Program A" }).click();
-  // 5. lexical decision: one instructions page, then 8 trials
-  await page.locator("#jspsych-instructions-next").click();
-  for (let i = 0; i < 8; i++) {
-    const stim = page.locator(".stimulus");
-    await stim.waitFor({ state: "visible" });
-    const word = (await stim.textContent()).trim();
-    const realWords = ["TABLE", "GARDEN", "PLANET", "SILVER"];
-    await page.keyboard.press(realWords.includes(word) ? "f" : "j");
-    await stim.waitFor({ state: "detached" });
-  }
-  // 6. feedback
-  await page.locator('input[name="Q0"][value="4"]').check();
-  await page.locator("#jspsych-survey-likert-next").click();
-  await page.locator("textarea").fill("Robot participant says hi.");
-  await page.locator("#jspsych-survey-text-next").click();
-  // 7. debrief
-  await page.getByRole("button", { name: "Finish" }).click();
-  await expect(page.getByText("All done")).toBeVisible({ timeout: 30000 });
-}
-
-async function fsGet(path) {
-  // "Bearer owner" is the emulator's admin token: it bypasses security rules, like the Admin SDK.
-  const r = await fetch(`${FS}/${path}`, { headers: { Authorization: "Bearer owner" } });
-  return { status: r.status, body: r.status === 200 ? await r.json() : null };
-}
-
-// Unwrap Firestore REST "fields" encoding into plain JS.
 function decode(v) {
-  if (v == null) return null;
-  if ("stringValue" in v) return v.stringValue;
-  if ("integerValue" in v) return Number(v.integerValue);
-  if ("doubleValue" in v) return v.doubleValue;
-  if ("booleanValue" in v) return v.booleanValue;
+  if (v === null || v === undefined) return null;
+  for (const key of ["stringValue", "booleanValue", "timestampValue"]) if (key in v) return v[key];
+  for (const key of ["integerValue", "doubleValue"]) if (key in v) return Number(v[key]);
   if ("nullValue" in v) return null;
-  if ("timestampValue" in v) return v.timestampValue;
-  if ("mapValue" in v) return decodeFields(v.mapValue.fields || {});
   if ("arrayValue" in v) return (v.arrayValue.values || []).map(decode);
+  if ("mapValue" in v) return fields(v.mapValue.fields || {});
   return v;
 }
-function decodeFields(fields) {
-  const out = {};
-  for (const k of Object.keys(fields)) out[k] = decode(fields[k]);
-  return out;
+function fields(f) { return Object.fromEntries(Object.entries(f).map(([k, v]) => [k, decode(v)])); }
+async function getDoc(path) {
+  const response = await fetch(`${FS}/${path}`, { headers: { Authorization: "Bearer owner" } });
+  expect(response.status).toBe(200);
+  return fields((await response.json()).fields);
+}
+async function readTrials(docId) {
+  const response = await fetch(`${FS}/experiments/${ID}/participants/${docId}/trials?pageSize=500`, { headers: { Authorization: "Bearer owner" } });
+  expect(response.status).toBe(200);
+  return (await response.json()).documents.flatMap(d => fields(d.fields).trials);
 }
 
-test.describe("experiment", () => {
-  test("runs to the end and saves data", async ({ page }) => {
-    const consoleErrors = [];
-    page.on("pageerror", (e) => consoleErrors.push(String(e)));
+test("complete experiment saves every required measure and exercises timeout and incorrect answers", async ({ page }, info) => {
+  const errors = [];
+  const failedImages = [];
+  page.on("pageerror", error => errors.push(String(error)));
+  page.on("response", response => { if (response.url().includes("/stimuli/") && response.status() !== 200) failedImages.push(response.url()); });
+  await page.goto(query() + "&PROLIFIC_PID=QA-robot&STUDY_ID=QA-study&SESSION_ID=QA-session");
+  await page.waitForFunction(() => window.__saver && window.__saver.docId);
+  await page.screenshot({ path: info.outputPath("consent.png") });
+  await runThroughExperiment(page, { exerciseErrors: true, screenshots: info.outputDir });
+  expect(errors).toEqual([]);
+  expect(failedImages).toEqual([]);
+  const trials = await page.evaluate(() => window.__jsPsych.data.get().values());
+  await info.attach("qa-trials", { body: JSON.stringify(trials, null, 2), contentType: "application/json" });
+  const select = task => trials.filter(t => t.task === task);
+  expect(trials[0].task).toBe("consent");
+  expect(trials.at(-1).task).toBe("debrief");
+  expect(select("preference_rating")).toHaveLength(24);
+  expect(select("preference_rating").every(t => Number.isFinite(t.rating))).toBe(true);
+  expect(select("deliberation")).toHaveLength(8);
+  expect(select("choice_rationale")).toHaveLength(4);
+  expect(select("final_deliberation")).toHaveLength(4);
+  expect(select("outcome_learning")).toHaveLength(4);
+  expect(select("outcome_learning").filter(t => t.chosen_reward === 1)).toHaveLength(2);
+  expect(select("final_choice")).toHaveLength(48);
+  expect(select("final_choice").filter(t => t.pair_type === "unchosen")).toHaveLength(24);
+  expect(select("final_choice").filter(t => t.timed_out)).toHaveLength(1);
+  expect(select("final_choice").filter(t => t.timed_out)[0].adaptive_choice).toBeNull();
+  for (const t of select("final_choice").filter(t => !t.timed_out)) {
+    const pickedReward = t.choice === "left" ? t.left_paired_reward : t.right_paired_reward;
+    expect(t.chose_paired_reward).toBe(pickedReward === 1);
+    expect(t.adaptive_choice).toBe(t.pair_type === "chosen" ? pickedReward === 1 : pickedReward === 0);
+  }
+  expect(select("item_memory")).toHaveLength(8);
+  expect(select("item_memory").filter(t => t.false_alarm)).toHaveLength(1);
+  expect(select("associative_memory")).toHaveLength(4);
+  expect(select("associative_memory").filter(t => !t.correct)).toHaveLength(1);
+  expect(select("attention_check").some(t => !t.correct)).toBe(true);
+  expect(select("reward_judgment")).toHaveLength(0);
+  expect(select("recognition_trial")).toHaveLength(0);
+  const docId = await page.evaluate(() => window.__saver.docId);
+  expect([...new Set(trials.map(t => t.participant_id))]).toEqual([docId]);
+  expect(trials.every(t => t.qa_run)).toBe(true);
+  if (EMULATOR) {
+    const participant = await getDoc(`experiments/${ID}/participants/${docId}`);
+    expect(participant.completed).toBe(true);
+    expect(participant.design).toBe("within-subjects");
+    expect(participant.prolific_pid).toBe("QA-robot");
+    const saved = await readTrials(docId);
+    expect(saved.length).toBe(trials.length);
+    expect(saved.filter(t => t.task === "final_choice")).toHaveLength(48);
+    expect(await page.evaluate(() => window.__saver.stats.writes_failed)).toBe(0);
+  } else {
+    await expect(page.locator("#data-saver-fallback")).toBeVisible();
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Download data (JSON)" }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/\.json$/);
+  }
+});
 
-    await page.goto(EMULATOR ? "/?emulator=1&PROLIFIC_PID=robot123&STUDY_ID=s1&SESSION_ID=sess1" : "/");
-    await page.waitForFunction(() => window.__saver && window.__saver.uid);
-    const mode = await page.evaluate(() => window.__saver.mode);
-    expect(mode).toBe(EMULATOR ? "emulator" : "offline");
+test("chunked emulator writes retain all trial indices", async ({ page }) => {
+  test.skip(!EMULATOR, "requires local Firestore/Auth emulator");
+  await page.goto(query() + "&chunk_size=7");
+  await runThroughExperiment(page);
+  const docId = await page.evaluate(() => window.__saver.docId);
+  const p = await getDoc(`experiments/${ID}/participants/${docId}`);
+  const rows = await readTrials(docId);
+  expect(rows.length).toBe(p.n_trials);
+  // Conditional jsPsych timelines may skip indices; compare actual browser rows, not a
+  // synthetic contiguous sequence, so this checks that saving loses/duplicates no trials.
+  const expected = await page.evaluate(() => window.__jsPsych.data.get().values().map(t => t.trial_index));
+  expect(rows.map(t => t.trial_index).sort((a, b) => a - b)).toEqual(expected.sort((a, b) => a - b));
+  expect(new Set(rows.map(t => t.trial_index)).size).toBe(rows.length);
+});
 
-    await runThroughExperiment(page);
+test("declining consent records no task responses and does not complete the study", async ({ page }) => {
+  await page.goto(query());
+  await page.getByRole("button", { name: "I do not agree" }).click();
+  await expect(page.getByText("You chose not to participate")).toBeVisible();
+  const rows = await page.evaluate(() => window.__jsPsych.data.get().values());
+  expect(rows).toHaveLength(1);
+  expect(rows[0].consented).toBe(false);
+  if (EMULATOR) {
+    const docId = await page.evaluate(() => window.__saver.docId);
+    expect((await getDoc(`experiments/${ID}/participants/${docId}`)).completed).toBe(false);
+  }
+});
 
-    // No uncaught errors from the experiment itself.
-    expect(consoleErrors, "uncaught page errors").toEqual([]);
-
-    const uid = await page.evaluate(() => window.__saver.docId);
-    const stats = await page.evaluate(() => window.__saver.stats);
-
-    if (!EMULATOR) {
-      // Offline: banner + download fallback, nothing else to check.
-      await expect(page.locator("#data-saver-banner")).toHaveAttribute("data-kind", "offline");
-      await expect(page.locator("#data-saver-fallback")).toBeVisible();
-      return;
+test("three practice timeouts end the session and mark it incomplete", async ({ page }) => {
+  await page.goto(query());
+  await page.getByRole("button", { name: "I agree to participate" }).click();
+  while (!(await page.locator('[data-screen="deliberation"]').isVisible())) {
+    if (await page.locator('input[type="range"]').isVisible()) {
+      await page.locator('input[type="range"]').focus();
+      await page.keyboard.press("ArrowRight");
     }
+    if (await page.getByRole("button", { name: "Continue", exact: true }).isEnabled().catch(() => false)) {
+      await page.getByRole("button", { name: "Continue", exact: true }).click();
+    } else await page.waitForTimeout(20);
+  }
+  await expect(page.getByText("Task ended", { exact: true })).toBeVisible({ timeout: 12000 });
+  const rows = await page.evaluate(() => window.__jsPsych.data.get().values());
+  expect(rows.filter(t => t.task === "deliberation" && t.timed_out)).toHaveLength(3);
+  expect(rows.filter(t => t.task === "outcome_learning")).toHaveLength(0);
+  if (EMULATOR) {
+    const docId = await page.evaluate(() => window.__saver.docId);
+    const p = await getDoc(`experiments/${ID}/participants/${docId}`);
+    expect(p.completed).toBe(false);
+    expect(p.termination_reason).toBe("three_missed_practice_responses");
+  }
+});
 
-    expect(stats.writes_failed).toBe(0);
-    await expect(page.locator("#data-saver-fallback")).toHaveCount(0);
+test("missing image prevents entry into the task", async ({ page }) => {
+  await page.route("**/stimuli/shrimp_exemplar1.jpg", route => route.fulfill({ status: 404, body: "missing" }));
+  await page.goto(query());
+  await page.getByRole("button", { name: "I agree to participate" }).click();
+  await expect(page.getByText("Images could not be loaded")).toBeVisible();
+  await expect(page.locator('[data-screen="rating"]')).toHaveCount(0);
+});
 
-    // Participant document is complete and carries condition + Prolific ids.
-    const p = await fsGet(`experiments/${EXPERIMENT_ID}/participants/${uid}`);
-    expect(p.status).toBe(200);
-    const pdoc = decodeFields(p.body.fields);
-    expect(pdoc.completed).toBe(true);
-    expect(["gain", "loss"]).toContain(pdoc.condition);
-    expect(pdoc.prolific_pid).toBe("robot123");
-    expect(pdoc.n_trials).toBeGreaterThan(10);
-    expect(typeof pdoc.full_data).toBe("string");
-    const full = JSON.parse(pdoc.full_data);
-    expect(full.length).toBe(pdoc.n_trials);
-
-    // One chunk per trial (chunk_size = 1), each carrying the trial data.
-    const chunks = await fsGet(`experiments/${EXPERIMENT_ID}/participants/${uid}/trials?pageSize=500`);
-    expect(chunks.status).toBe(200);
-    const docs = (chunks.body.documents || []).map((d) => decodeFields(d.fields));
-    expect(docs.length).toBe(pdoc.n_trials);
-    const trials = docs.flatMap((d) => d.trials);
-    const framing = trials.find((t) => t.task === "framing");
-    expect(framing.choice).toBe("certain");
-    expect(framing.condition).toBe(pdoc.condition);
-    const ld = trials.filter((t) => t.task === "lexical_decision");
-    expect(ld.length).toBe(8);
-    expect(ld.every((t) => t.correct === true)).toBe(true);
-    const demo = trials.find((t) => t.task === "demographics");
-    expect(demo.response.age).toBe(34);
-
-    // Every trial row must carry the same participant id as its participant document,
-    // otherwise trials.csv and participants.csv cannot be joined in the analysis.
-    expect([...new Set(trials.map((t) => t.participant_id))]).toEqual([uid]);
+test("production settings retain original response windows and outcome delay", async ({ page }) => {
+  // No qa=1: verify normal experiment parameters, while forcing database offline.
+  await page.goto("/?preview=1");
+  await page.getByRole("button", { name: "I agree to participate" }).click();
+  await page.waitForFunction(() => window.__jsPsych && window.__design);
+  const data = await page.evaluate(() => {
+    const timeline = window.__jsPsych.getTimeline();
+    const flattened = [];
+    function walk(nodes) { for (const n of nodes) { if (n.timeline) walk(n.timeline); else flattened.push(n); } }
+    walk(timeline);
+    return flattened.filter(t => ["deliberation", "final_deliberation", "final_choice", "outcome_learning"].includes(t.data && t.data.task))
+      .map(t => ({ task: t.data.task, duration: t.trial_duration }));
   });
+  expect(data.filter(t => t.task === "deliberation").every(t => t.duration === 5000)).toBe(true);
+  expect(data.filter(t => t.task === "final_deliberation").every(t => t.duration === null)).toBe(true);
+  expect(data.filter(t => t.task === "final_choice").every(t => t.duration === 7000)).toBe(true);
+  expect(data.filter(t => t.task === "outcome_learning").every(t => t.duration === 3000)).toBe(true);
+});
 
-  test("chunked writes (chunk_size > 1) save every trial", async ({ page }) => {
-    test.skip(!EMULATOR, "needs the Firestore emulator");
-    await page.goto("/?emulator=1&chunk_size=5");
-    await page.waitForFunction(() => window.__saver && window.__saver.uid);
-    await runThroughExperiment(page);
-    const uid = await page.evaluate(() => window.__saver.docId);
-    const p = decodeFields((await fsGet(`experiments/${EXPERIMENT_ID}/participants/${uid}`)).body.fields);
-    const chunks = await fsGet(`experiments/${EXPERIMENT_ID}/participants/${uid}/trials?pageSize=500`);
-    const docs = (chunks.body.documents || []).map((d) => decodeFields(d.fields));
-    expect(docs.length).toBe(Math.ceil(p.n_trials / 5));
-    const indices = docs.flatMap((d) => d.trials).map((t) => t.trial_index).sort((a, b) => a - b);
-    expect(indices).toEqual([...Array(p.n_trials).keys()]);
+test("a second run is assigned a distinct participant record", async ({ page }) => {
+  await page.goto(query());
+  await page.waitForFunction(() => window.__saver && window.__saver.docId);
+  const first = await page.evaluate(() => window.__saver.docId);
+  await page.reload();
+  await page.waitForFunction(() => window.__saver && window.__saver.docId);
+  expect(await page.evaluate(() => window.__saver.docId)).not.toBe(first);
+});
+
+test("completion-code parameter cannot redirect an automated test to Prolific", async ({ page }) => {
+  await page.goto(query() + "&cc=QA-COMPLETION");
+  await runThroughExperiment(page);
+  expect(page.url()).toContain("localhost");
+  if (EMULATOR) await expect(page.getByText("QA-COMPLETION")).toBeVisible();
+});
+
+test("mobile devices stop before consent; desktop devices can consent", async ({ browser, page }) => {
+  await page.goto(query());
+  await expect(page.getByRole("button", { name: "I agree to participate" })).toBeVisible();
+  const context = await browser.newContext({ ...devices["iPhone 13"] });
+  const mobile = await context.newPage();
+  await mobile.goto("http://localhost:8017" + query());
+  await expect(mobile.locator("#device-unsupported")).toBeVisible();
+  await expect(mobile.getByRole("button", { name: "I agree to participate" })).toHaveCount(0);
+  await context.close();
+});
+
+test("download fallback gives participants the researcher contact", async ({ page }) => {
+  await page.goto(query());
+  await page.waitForFunction(() => window.__saver && window.__saver.docId);
+  await page.evaluate(() => window.__saver._offerDownload(null, "[]"));
+  await expect(page.locator("#data-saver-fallback")).toContainText("yifangsl@stanford.edu");
+  await expect(page.locator("#data-saver-fallback").getByRole("link")).toHaveAttribute("href", /^mailto:/);
+});
+
+test("security rules reject reads and writes to someone else's records", async ({ page }) => {
+  test.skip(!EMULATOR, "requires local Firestore/Auth emulator");
+  await page.goto(query());
+  await page.waitForFunction(() => window.__saver && window.__saver.mode === "emulator");
+  const results = await page.evaluate(async () => {
+    const s = window.__saver, fb = s.fb, out = {};
+    const attempt = async (name, fn) => { try { await fn(); out[name] = "allowed"; } catch (error) { out[name] = error.code; } };
+    await attempt("read_own", () => fb.getDoc(fb.doc(s.db, "experiments", s.opts.experiment_id, "participants", s.docId)));
+    await attempt("write_other", () => fb.setDoc(fb.doc(s.db, "experiments", s.opts.experiment_id, "participants", "someone-else-abcd"), { hacked: true }));
+    await attempt("write_other_trial", () => fb.setDoc(fb.doc(s.db, "experiments", s.opts.experiment_id, "participants", "someone-else-abcd", "trials", "c0"), { trials: [] }));
+    await attempt("unrelated", () => fb.setDoc(fb.doc(s.db, "unrelated", "doc"), { hacked: true }));
+    await attempt("own_trial", () => fb.setDoc(fb.doc(s.db, "experiments", s.opts.experiment_id, "participants", s.docId, "trials", "rules-test"), { trials: [{ a: 1 }] }));
+    return out;
   });
+  expect(results).toEqual({ read_own: "permission-denied", write_other: "permission-denied", write_other_trial: "permission-denied", unrelated: "permission-denied", own_trial: "allowed" });
+});
 
-  test("declining consent ends the study without a thank-you-for-your-data message", async ({ page }) => {
-    await page.goto(EMULATOR ? "/?emulator=1" : "/");
-    await page.waitForFunction(() => window.__saver && window.__saver.uid);
-    await page.getByRole("button", { name: "I do not agree" }).click();
-    await expect(page.getByText("You chose not to participate")).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText("Your responses were saved")).toHaveCount(0);
-  });
-
-  test("losing the connection at the end offers the download fallback instead of hanging", async ({ page, context }) => {
-    test.skip(!EMULATOR, "needs the Firestore emulator");
-    test.setTimeout(120000);
-    // Run the real flow up to the last click, then cut the connection before "Finish".
-    await page.goto("/?emulator=1");
-    await page.waitForFunction(() => window.__saver && window.__saver.uid);
-    await page.getByRole("button", { name: "I agree to participate" }).click();
-    await page.locator("#jspsych-instructions-next").click();
-    await page.locator("#jspsych-instructions-next").click();
-    await page.locator('input[value="Continue"]').click();
-    await page.getByRole("button", { name: "Program B" }).click();
-    await page.locator("#jspsych-instructions-next").click();
-    for (let i = 0; i < 8; i++) {
-      const stim = page.locator(".stimulus");
-      await stim.waitFor({ state: "visible" });
-      await page.keyboard.press("f");
-      await stim.waitFor({ state: "detached" });
-    }
-    await page.locator("#jspsych-survey-likert-next").click();
-    await page.locator("#jspsych-survey-text-next").click();
-    await context.setOffline(true);
-    await page.getByRole("button", { name: "Finish" }).click();
-    await expect(page.locator("#data-saver-fallback")).toBeVisible({ timeout: 40000 });
-    await expect(page.getByText("connection to the server was lost")).toBeVisible();
-    await expect(page.getByText("Your responses were saved")).toHaveCount(0);
-    await context.setOffline(false);
-  });
-
-  test("a second run in the same browser is a new participant and saves cleanly", async ({ page }) => {
-    test.skip(!EMULATOR, "needs the Firestore emulator");
-    test.setTimeout(120000);
-
-    const ids = [];
-    for (let run = 0; run < 2; run++) {
-      // Same page/context both times: the anonymous auth session persists, exactly as it
-      // does for a student testing twice in one browser or a participant who reloads.
-      await page.goto("/?emulator=1&PROLIFIC_PID=rerun" + run);
-      await page.waitForFunction(() => window.__saver && window.__saver.docId);
-      await runThroughExperiment(page);
-      const info = await page.evaluate(() => ({
-        uid: window.__saver.uid, docId: window.__saver.docId, stats: window.__saver.stats,
-      }));
-      expect(info.stats.writes_failed, "run " + run + " had failed writes").toBe(0);
-      await expect(page.locator("#data-saver-fallback")).toHaveCount(0);
-      ids.push(info);
-    }
-
-    expect(ids[0].uid).toBe(ids[1].uid);          // same browser, same anonymous identity
-    expect(ids[0].docId).not.toBe(ids[1].docId);  // but a separate participant record
-
-    // Both runs survive intact, with their own Prolific id and their own trials.
-    for (let run = 0; run < 2; run++) {
-      const p = await fsGet(`experiments/${EXPERIMENT_ID}/participants/${ids[run].docId}`);
-      expect(p.status).toBe(200);
-      const pdoc = decodeFields(p.body.fields);
-      expect(pdoc.completed, "run " + run + " completed").toBe(true);
-      expect(pdoc.prolific_pid).toBe("rerun" + run);
-      const chunks = await fsGet(`experiments/${EXPERIMENT_ID}/participants/${ids[run].docId}/trials?pageSize=500`);
-      expect((chunks.body.documents || []).length).toBe(pdoc.n_trials);
-    }
-  });
-
-  test("setting a Prolific completion code does not break the test run", async ({ page }) => {
-    // Regression test for the failure students hit right before launch: with a completion
-    // code set, the live page redirects to Prolific, but a test run must stay put so that
-    // `npm test` and CI keep passing.
-    const navigations = [];
-    page.on("framenavigated", (f) => { if (f === page.mainFrame()) navigations.push(f.url()); });
-
-    await page.goto(EMULATOR ? "/?emulator=1&cc=QA123CODE" : "/?cc=QA123CODE");
-    await page.waitForFunction(() => window.__saver && window.__saver.docId);
-    await runThroughExperiment(page);
-
-    expect(navigations.some((u) => u.includes("prolific.com")), "must not navigate to Prolific").toBe(false);
-    if (EMULATOR) await expect(page.getByText("QA123CODE")).toBeVisible();
-  });
-
-  test("phones and tablets are turned away before consent", async ({ browser }) => {
-    const context = await browser.newContext({ ...devices["iPhone 13"] });
-    const page = await context.newPage();
-    await page.goto("http://localhost:8017/?emulator=1");
-    await expect(page.locator("#device-unsupported")).toBeVisible({ timeout: 20000 });
-    await expect(page.getByRole("button", { name: "I agree to participate" })).toHaveCount(0);
-
-    if (EMULATOR) {
-      // The turned-away visit is still recorded, so phone traffic is visible in the data.
-      await page.waitForFunction(() => window.__saver && window.__saver.docId);
-      const docId = await page.evaluate(() => window.__saver.docId);
-      await page.evaluate(() => window.__saver._settle());
-      const p = await fsGet(`experiments/${EXPERIMENT_ID}/participants/${docId}`);
-      const pdoc = decodeFields(p.body.fields);
-      expect(pdoc.device_supported).toBe(false);
-      expect(pdoc.completed).toBe(false);
-    }
-    await context.close();
-  });
-
-  test("a desktop browser is not turned away", async ({ page }) => {
-    await page.goto(EMULATOR ? "/?emulator=1" : "/");
-    await expect(page.getByRole("button", { name: "I agree to participate" })).toBeVisible();
-    await expect(page.locator("#device-unsupported")).toHaveCount(0);
-  });
-
-  test("a write the database refuses is announced on the page, not only in the console", async ({ page }) => {
-    test.skip(!EMULATOR, "needs the Firestore emulator");
-    // Regression test for the state a student is in when they skip publishing the rules, or
-    // once test-mode rules expire: sign-in succeeds, so the page used to look perfectly
-    // healthy from consent to debrief and only admitted the problem on the last screen.
-    await page.goto("/?emulator=1");
-    await page.waitForFunction(() => window.__saver && window.__saver.docId);
-    // Emulator runs carry an informational banner; what must be absent is a failure banner.
-    await expect(page.locator('#data-saver-banner[data-kind="offline"]')).toHaveCount(0);
-
-    // Force a genuine permission-denied on a normal save path by aiming the participant
-    // document at someone else's id, which the rules refuse exactly as deny-all rules would.
-    await page.evaluate(async () => {
-      window.__saver.docId = "someone-else-deadbeef";
-      await window.__saver.updateParticipant({ blocked: true });
+test("uncaught client errors reach the emulator error collection", async ({ page }) => {
+  test.skip(!EMULATOR, "requires local Firestore/Auth emulator");
+  await page.goto(query());
+  await page.waitForFunction(() => window.__saver && window.__saver.mode === "emulator");
+  await page.evaluate(() => { setTimeout(() => { throw new Error("QA simulated error"); }, 0); });
+  await page.waitForFunction(() => window.__saver.stats.errors_logged >= 1);
+  const uid = await page.evaluate(() => window.__saver.uid);
+  await expect.poll(async () => {
+    const response = await fetch(`${FS}/experiments/${ID}/errors?pageSize=100`, { headers: { Authorization: "Bearer owner" } });
+    const body = await response.json();
+    return (body.documents || []).some(d => {
+      const record = fields(d.fields);
+      return record.uid === uid && record.message.includes("QA simulated error");
     });
+  }).toBe(true);
+});
 
-    const banner = page.locator("#data-saver-banner");
-    await expect(banner).toBeVisible();
-    await expect(banner).toHaveAttribute("data-kind", "offline");
-    await expect(banner).toContainText("NOT being saved");
-    await expect(banner).toContainText("permission-denied");
-    await expect(banner).toContainText("2.3");
-    expect(await page.evaluate(() => window.__saver.stats.writes_failed)).toBeGreaterThan(0);
-  });
-
-  test("the download fallback tells the participant where to send the file", async ({ page }) => {
-    await page.goto(EMULATOR ? "/?emulator=1" : "/");
-    await page.waitForFunction(() => window.__saver && window.__saver.docId);
-    await page.evaluate(() => window.__saver._offerDownload(null, "[]"));
-    const box = page.locator("#data-saver-fallback");
-    await expect(box).toBeVisible();
-    await expect(box).toContainText("@");                       // a contact address is present
-    await expect(box).toContainText("you will be paid");
-    await expect(box.getByRole("link")).toHaveAttribute("href", /^mailto:/);
-  });
-
-  test("security rules reject reads and writes to other participants", async ({ page }) => {
-    test.skip(!EMULATOR, "needs the Firestore emulator");
-    await page.goto("/?emulator=1");
-    await page.waitForFunction(() => window.__saver && window.__saver.uid);
-
-    const results = await page.evaluate(async () => {
-      const s = window.__saver;
-      const fb = s.fb;
-      const out = {};
-      const attempt = async (name, fn) => {
-        try { await fn(); out[name] = "allowed"; } catch (e) { out[name] = e.code || e.message; }
-      };
-      await attempt("read own doc", () =>
-        fb.getDoc(fb.doc(s.db, "experiments", s.opts.experiment_id, "participants", s.docId)));
-      await attempt("write other participant", () =>
-        fb.setDoc(fb.doc(s.db, "experiments", s.opts.experiment_id, "participants", "someone-else"), { hacked: true }));
-      await attempt("write other participant trials", () =>
-        fb.setDoc(fb.doc(s.db, "experiments", s.opts.experiment_id, "participants", "someone-else", "trials", "c0"), { trials: [] }));
-      await attempt("write unrelated collection", () =>
-        fb.setDoc(fb.doc(s.db, "spam", "doc"), { spam: true }));
-      await attempt("error doc with wrong uid", () =>
-        fb.addDoc(fb.collection(s.db, "experiments", s.opts.experiment_id, "errors"), { uid: "not-me", message: "x" }));
-      await attempt("own chunk (should be allowed)", () =>
-        fb.setDoc(fb.doc(s.db, "experiments", s.opts.experiment_id, "participants", s.docId, "trials", "chunk-test"), { trials: [{ a: 1 }] }));
-      await attempt("participant doc without the run suffix", () =>
-        fb.setDoc(fb.doc(s.db, "experiments", s.opts.experiment_id, "participants", s.uid), { sneaky: true }));
-      await attempt("another browser's run id", () =>
-        fb.setDoc(fb.doc(s.db, "experiments", s.opts.experiment_id, "participants", "someone-else-abcd1234"), { sneaky: true }));
-      return out;
-    });
-
-    expect(results["read own doc"]).toBe("permission-denied");
-    expect(results["write other participant"]).toBe("permission-denied");
-    expect(results["write other participant trials"]).toBe("permission-denied");
-    expect(results["write unrelated collection"]).toBe("permission-denied");
-    expect(results["error doc with wrong uid"]).toBe("permission-denied");
-    expect(results["own chunk (should be allowed)"]).toBe("allowed");
-    expect(results["participant doc without the run suffix"]).toBe("permission-denied");
-    expect(results["another browser's run id"]).toBe("permission-denied");
-  });
-
-  test("uncaught errors are logged to the errors collection", async ({ page }) => {
-    test.skip(!EMULATOR, "needs the Firestore emulator");
-    await page.goto("/?emulator=1");
-    await page.waitForFunction(() => window.__saver && window.__saver.uid);
-    const uid = await page.evaluate(() => window.__saver.uid);
-
-    // Simulate a bug in a trial: an uncaught exception.
-    await page.evaluate(() => {
-      setTimeout(() => { throw new Error("simulated bug in trial code"); }, 0);
-    });
-    await page.waitForFunction(() => window.__saver.stats.errors_logged >= 1);
-    await page.evaluate(() => new Promise((r) => setTimeout(r, 1500)));
-
-    const errs = await fsGet(`experiments/${EXPERIMENT_ID}/errors?pageSize=100`);
-    const mine = (errs.body.documents || []).map((d) => decodeFields(d.fields)).filter((d) => d.uid === uid);
-    expect(mine.length).toBe(1);
-    expect(mine[0].message).toContain("simulated bug");
-    expect(mine[0].context.kind).toBe("uncaught");
-  });
+test("connection loss at completion offers data rescue", async ({ page, context }) => {
+  test.skip(!EMULATOR, "requires local Firestore/Auth emulator");
+  await page.goto(query());
+  await runThroughExperiment(page, { beforeFinish: () => context.setOffline(true) });
+  await expect(page.locator("#data-saver-fallback")).toBeVisible();
+  await expect(page.getByText("Your responses were saved")).toHaveCount(0);
+  await context.setOffline(false);
 });

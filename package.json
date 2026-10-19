@@ -12,7 +12,9 @@
     "vendor": "node scripts/vendor.js",
     "bundle:firebase": "esbuild scripts/firebase-entry.js --bundle --format=iife --global-name=firebaseBundle --minify --outfile=lib/firebase-bundle.js",
     "pretest": "node scripts/check-browsers.js",
-    "setup": "npm install && node scripts/check-browsers.js"
+    "setup": "npm install && node scripts/check-browsers.js",
+    "test:design": "node --test tests/design.test.cjs",
+    "test:offline": "playwright test"
   },
   "dependencies": {
     "firebase-admin": "^13.0.0"
@@ -20,7 +22,9 @@
   "devDependencies": {
     "@jspsych/plugin-html-button-response": "^2.1.0",
     "@jspsych/plugin-html-keyboard-response": "^2.1.0",
+    "@jspsych/plugin-html-slider-response": "2.1.0",
     "@jspsych/plugin-instructions": "^2.1.0",
+    "@jspsych/plugin-preload": "2.1.0",
     "@jspsych/plugin-survey": "^4.0.0",
     "@jspsych/plugin-survey-likert": "^2.1.0",
     "@jspsych/plugin-survey-text": "^2.1.0",

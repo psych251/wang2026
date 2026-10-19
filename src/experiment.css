@@ -9,3 +9,35 @@
 .framing .programs { margin: 1em 0; padding-left: 1.2em; }
 #jspsych-html-button-response-btngroup { text-align: center; }
 .thanks { text-align: center; }
+
+/* Keep every timed screen and its keyboard prompts visible on a 1280 x 720 laptop. */
+.jspsych-content { max-width: 1000px; padding: 36px 24px 20px; box-sizing: border-box; }
+.instructions-screen { max-width: 760px; margin: auto; font-size: 18px; line-height: 1.6; }
+.object-image { display: block; width: 300px; height: 300px; object-fit: contain; border: 4px solid transparent; box-sizing: border-box; margin: 0 auto; }
+.object-pair { display: flex; justify-content: center; align-items: center; gap: 48px; margin: 8px auto; }
+.object-pair .object-image { margin: 0; }
+.object-image.selected { border-color: #14813c; }
+[data-screen] { text-align: center; }
+[data-screen] > p { margin: 12px auto; }
+.phase-label { color: #555; font-size: 15px; letter-spacing: 0.04em; }
+.key-hint { color: #333; font-size: 17px; }
+.key-gap { display: inline-block; width: 36px; }
+kbd { font-family: inherit; padding: 2px 7px; border: 1px solid #aaa; border-radius: 4px; background: #fafafa; }
+.reward-panel { width: 300px; height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 26px; }
+.reward-symbol { display: flex; align-items: center; justify-content: center; width: 110px; height: 110px; border-radius: 50%; font-size: 80px; line-height: 1; }
+.rewarded { background: #f3cf64; color: #664c00; border: 3px solid #b48a19; }
+.neutral { color: #777; border: 3px solid #999; }
+.memory-options { display: flex; justify-content: center; gap: 12px; }
+.memory-options figure { margin: 12px 0; }
+.memory-options .object-image { width: 100px; height: 100px; }
+.memory-options figcaption { margin: 12px 0; }
+.attention-letter { font-size: 100px; line-height: 1.5; }
+.correct-feedback { color: #14813c; }
+.incorrect-feedback { color: #b62222; }
+.fixation { text-align: center; }
+#jspsych-html-slider-response-stimulus { margin: 0 0 12px !important; }
+#jspsych-html-slider-response-wrapper { margin: 8px auto !important; }
+#jspsych-html-slider-response-stimulus .object-image { width: 300px; height: 300px; }
+#jspsych-html-slider-response-next { display: block; margin: 18px auto 0; }
+#preview-badge { position: fixed; bottom: 0; left: 0; right: 0; z-index: 9998; padding: 4px 12px; background: #fff4cd; color: #5c4500; font-size: 12px; text-align: center; }
+.startup-error { padding: 24px; color: #a00; }
