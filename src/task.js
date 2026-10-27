@@ -15,6 +15,10 @@
   const sideBySide = (left, right, selected = null) =>
     `<div class="object-pair">${image(left, selected === "left" ? "selected" : "")}${image(right, selected === "right" ? "selected" : "")}</div>`;
   const keys = '<p class="key-hint"><kbd>J</kbd> Left <span class="key-gap"></span> Right <kbd>K</kbd></p>';
+  // Supplied OSF instruction artwork, preserved byte-for-byte. delintro4.svg is
+  // deliberately excluded: its 7 s/retry/SONA instructions do not describe Exp 1.
+  const instructionImages = ["overallintro.svg", "rating2.svg", "delintro2.svg",
+    "delintro3.svg", "learning2.svg", "memory2.svg"].map(f => "instructions/" + f);
 
   function build(jsPsych, saver, config, params) {
     const local = ["localhost", "127.0.0.1"].includes(location.hostname);
@@ -27,7 +31,8 @@
     window.__design = design;
     window.__jsPsych = jsPsych;
     const metadata = {
-      design: "within-subjects", paradigm: "wang2026-experiment1", paradigm_version: "1.0.0-draft",
+      design: "within-subjects", paradigm: "wang2026-experiment1", paradigm_version: "1.1.0-original-instructions",
+      instructions_version: "osf-instructions-exp1-adaptations",
       random_seed: seed, stimulus_manifest: design.manifest_version, qa_run: qa, preview_run: preview,
       practice_miss_limit: 3, source_protocol: "paper-exp1-and-archived-exp1-records",
     };
@@ -40,30 +45,31 @@
       badge.textContent = qa ? "AUTOMATED TEST: accelerated timing; exclude these data" : "PREVIEW: data download only; no live database writes";
       document.body.appendChild(badge);
     }
-    const intro = (title, body, name) => ({
+    const intro = (title, body, name, source = null) => ({
       type: jsPsychHtmlButtonResponse,
       stimulus: `<section class="instructions-screen"><h2>${title}</h2>${body}</section>`,
-      choices: ["Continue"], data: { task: "instructions", phase: name },
+      choices: ["Continue"], data: { task: "instructions", phase: name,
+        ...(source ? { instruction_asset: source, instruction_presentation: "exp1_adapted_text" } : {}) },
+    });
+    const originalIntro = (filename, title, phase) => ({
+      type: jsPsychHtmlKeyboardResponse,
+      stimulus: `<section class="original-instructions"><img class="instruction-image" src="instructions/${filename}" alt="${title}"></section>`,
+      choices: [" "],
+      data: { task: "instructions", phase, instruction_asset: "instructions/" + filename,
+        instruction_presentation: "original_svg" },
     });
     const fixation = () => ({ type: jsPsychHtmlKeyboardResponse,
       stimulus: '<div class="fixation">+</div>', choices: "NO_KEYS", trial_duration: duration(750),
       data: { task: "fixation" } });
     const timeline = [{
       type: jsPsychPreload,
-      images: [...new Set(window.STIMULUS_MANIFEST.categories.concat(window.STIMULUS_MANIFEST.memory_distractor_categories).flatMap(c => c.files))].map(f => "stimuli/" + f),
+      images: [...instructionImages, ...[...new Set(window.STIMULUS_MANIFEST.categories.concat(window.STIMULUS_MANIFEST.memory_distractor_categories).flatMap(c => c.files))].map(f => "stimuli/" + f)],
       message: "<h2>Loading study images</h2><p>Please keep this window open.</p>",
       max_load_time: 60000, continue_after_error: false,
       error_message: "<h2>Images could not be loaded</h2><p>Please check your connection and contact the researcher. Do not continue with missing images.</p>",
       data: { task: "preload" },
-    }, intro("Build a stamp portfolio", `
-      <p>Your job is to choose images that will be placed on stamps. Some stamps have a high value and others have no value.
-      Try to build a portfolio with the most valuable stamps, using the information you learn during the task.</p>
-      <p>First, you will rate some pictures. You will then make choices, see stamp values, and make further choices.
-      Detailed instructions will appear before each part.</p>
-      <p>Use a computer keyboard and complete the study in one sitting in a quiet place.</p>`, "welcome"),
-    intro("Picture preferences", `<p>You will see 24 pictures, one at a time. Rate how much you personally like each one.</p>
-      <p>Move the slider from <strong>Strongly dislike</strong> to <strong>Strongly like</strong>, then select Continue.
-      There are no right or wrong answers. These are personal-preference ratings, not stamp-value judgments.</p>`, "ratings")];
+    }, originalIntro("overallintro.svg", "Instructions", "welcome"),
+    originalIntro("rating2.svg", "Instructions - Record Browsing Phase", "ratings")];
 
     for (const [i, item] of design.ratings.entries()) {
       timeline.push({ type: jsPsychHtmlSliderResponse,
@@ -76,12 +82,14 @@
         on_finish: data => { data.rating = data.response; },
       });
     }
-    timeline.push(intro("Choosing pictures", `<p>On each trial, choose the picture you think will be placed on the more valuable stamp.</p>
-      <p>Press <kbd>J</kbd> for the left picture or <kbd>K</kbd> for the right picture. Your choice will briefly have a green border.</p>
-      <p>You will see the same four pairs in two practice rounds and one decision round. During practice, respond within <strong>5 seconds</strong>.
-      The task will end if you miss three practice responses.</p>
-      <p>During the second practice round, explain each choice in a text box. Only your choices in the final decision round will determine
-      which pictures enter your portfolio. Consider your reasons carefully: your explanations can affect the value of the stamps.</p>`, "deliberation"));
+    timeline.push(originalIntro("delintro2.svg", "Instructions - Deliberation Phase: practice", "deliberation"),
+      originalIntro("delintro3.svg", "Instructions - Deliberation Phase: decision round", "deliberation_decisions"),
+      intro("Practice response reminder", `<p>During each practice round, respond within <strong>5 seconds</strong>:
+      press <kbd>J</kbd> for the left picture or <kbd>K</kbd> for the right picture. Your choice will briefly have a green border.</p>
+      <p>If you miss a practice response, you will see a warning and move to the next trial.
+      The task will end if you miss <strong>three practice responses</strong> across the two practice rounds.</p>
+      <p>During the second practice round, take the time you need to type your reason after choosing.
+      There is no time limit for choices in the third (decision) round.</p>`, "practice_response_reminder"));
 
     function deliberation(pair, round, order) {
       // jsPsych evaluates stimulus functions before on_start; initialize display state now.
@@ -146,7 +154,13 @@
     }
 
     timeline.push({
-      timeline: [intro("Stamp values", "<p>You will now see each picture you chose, followed by whether its stamp has a reward or no reward. Watch carefully and remember what you learn.</p>", "outcomes")],
+      // learning2.svg says "first round"; Exp 1 Methods 2.3.3 specifies the
+      // decision (third) round. Preserve the rest of the supplied wording.
+      timeline: [intro("Instructions - Outcome Announcement", `<p>The Board of Evaluations has now judged your choices
+        from the decision round of the deliberation phase and made decisions on the value of your chosen items.
+        You will only learn the value of the items you chose during that decision round.
+        Please pay close attention to these values to aid in the next round of portfolio building.</p>`,
+        "outcomes", "instructions/learning2.svg")],
       on_timeline_start: () => {
         D.assignRewards(design);
         const assignments = design.pairs.map(p => ({ pair_id: p.id,
@@ -231,9 +245,7 @@
     }
 
     timeline.push({
-      timeline: [intro("Memory task", `<p>There is one more task. You will see pictures one at a time.</p>
-        <p>Was the picture one you chose in the <strong>decision round</strong> of the earlier choosing task?</p>
-        <p>Press <kbd>1</kbd> for Yes (old) or <kbd>0</kbd> for No (new). If you recognize a picture, you may then be asked to choose the picture it was paired with.</p>`, "memory")],
+      timeline: [originalIntro("memory2.svg", "Instructions - Memory Test", "memory")],
       on_timeline_start: () => D.memoryTrials(design, window.STIMULUS_MANIFEST),
     });
     for (let i = 0; i < 8; i++) {
@@ -297,7 +309,7 @@
     }, { type: jsPsychHtmlButtonResponse, choices: ["Finish"],
       stimulus: `<h2>Debrief</h2><p>Thank you for participating. This study investigates how learning an outcome for something we choose
         affects later choices about related pictures, including pictures related to options we did not choose.</p>
-        <p>Two of your four chosen pictures were randomly assigned a reward and two no reward. The written explanations did not determine these assignments.
+        <p>Two of your four chosen pictures were randomly assigned a reward and two no reward. There was no Board of Evaluation judging your choices, and the written explanations did not determine these assignments.
         That instruction encouraged careful consideration of the picture pairs. Pictures you did not choose were never assigned an experienced outcome.</p>
         <p>The final memory task helps examine how memory for earlier pictures and their pairings relates to later choices.</p>
         <p>Questions: <a href="mailto:${config.contact_email}">${config.contact_email}</a>. Select Finish to save your responses.</p>`,

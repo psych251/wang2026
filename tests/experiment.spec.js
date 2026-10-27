@@ -30,7 +30,7 @@ test("complete experiment saves every required measure and exercises timeout and
   const errors = [];
   const failedImages = [];
   page.on("pageerror", error => errors.push(String(error)));
-  page.on("response", response => { if (response.url().includes("/stimuli/") && response.status() !== 200) failedImages.push(response.url()); });
+  page.on("response", response => { if (/\/(stimuli|instructions)\//.test(response.url()) && response.status() !== 200) failedImages.push(response.url()); });
   await page.goto(query() + "&PROLIFIC_PID=QA-robot&STUDY_ID=QA-study&SESSION_ID=QA-session");
   await page.waitForFunction(() => window.__saver && window.__saver.docId);
   await page.screenshot({ path: info.outputPath("consent.png") });
@@ -40,6 +40,15 @@ test("complete experiment saves every required measure and exercises timeout and
   const trials = await page.evaluate(() => window.__jsPsych.data.get().values());
   await info.attach("qa-trials", { body: JSON.stringify(trials, null, 2), contentType: "application/json" });
   const select = task => trials.filter(t => t.task === task);
+  expect(select("instructions").filter(t => t.instruction_asset).map(t => t.instruction_asset)).toEqual([
+    "instructions/overallintro.svg", "instructions/rating2.svg", "instructions/delintro2.svg",
+    "instructions/delintro3.svg", "instructions/learning2.svg", "instructions/memory2.svg",
+  ]);
+  expect(select("instructions").filter(t => t.instruction_presentation === "original_svg").every(t => t.response === " ")).toBe(true);
+  const outcomeInstructions = select("instructions").find(t => t.phase === "outcomes");
+  expect(outcomeInstructions.instruction_presentation).toBe("exp1_adapted_text");
+  expect(outcomeInstructions.stimulus).toContain("decision round of the deliberation phase");
+  expect(outcomeInstructions.stimulus).not.toContain("first round");
   expect(trials[0].task).toBe("consent");
   expect(trials.at(-1).task).toBe("debrief");
   expect(select("preference_rating")).toHaveLength(24);
@@ -118,11 +127,20 @@ test("three practice timeouts end the session and mark it incomplete", async ({ 
   await page.goto(query());
   await page.getByRole("button", { name: "I agree to participate" }).click();
   while (!(await page.locator('[data-screen="deliberation"]').isVisible())) {
+    const artwork = page.locator(".instruction-image");
+    if (await artwork.count()) {
+      await artwork.evaluate(e => e.decode());
+      const source = await artwork.getAttribute("src");
+      await page.keyboard.press("Space");
+      await expect(page.locator(`.instruction-image[src="${source}"]`)).toHaveCount(0);
+      continue;
+    }
     if (await page.locator('input[type="range"]').isVisible()) {
       await page.locator('input[type="range"]').focus();
       await page.keyboard.press("ArrowRight");
     }
-    if (await page.getByRole("button", { name: "Continue", exact: true }).isEnabled().catch(() => false)) {
+    const next = page.getByRole("button", { name: "Continue", exact: true });
+    if (await next.isVisible() && await next.isEnabled()) {
       await page.getByRole("button", { name: "Continue", exact: true }).click();
     } else await page.waitForTimeout(20);
   }
@@ -138,13 +156,15 @@ test("three practice timeouts end the session and mark it incomplete", async ({ 
   }
 });
 
-test("missing image prevents entry into the task", async ({ page }) => {
-  await page.route("**/stimuli/shrimp_exemplar1.jpg", route => route.fulfill({ status: 404, body: "missing" }));
+for (const asset of ["stimuli/shrimp_exemplar1.jpg", "instructions/memory2.svg"]) {
+test(`missing image prevents entry into the task: ${asset}`, async ({ page }) => {
+  await page.route("**/" + asset, route => route.fulfill({ status: 404, body: "missing" }));
   await page.goto(query());
   await page.getByRole("button", { name: "I agree to participate" }).click();
   await expect(page.getByText("Images could not be loaded")).toBeVisible();
   await expect(page.locator('[data-screen="rating"]')).toHaveCount(0);
 });
+}
 
 test("production settings retain original response windows and outcome delay", async ({ page }) => {
   // No qa=1: verify normal experiment parameters, while forcing database offline.

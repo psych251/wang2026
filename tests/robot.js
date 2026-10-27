@@ -8,7 +8,6 @@ async function runThroughExperiment(page, options = {}) {
   let wrongAttention = false;
   let wrongAssociation = false;
   let falseAlarm = false;
-  let instructions = 0;
   await page.getByRole("button", { name: "I agree to participate" }).click();
   const deadline = Date.now() + (options.timeoutMs || 100000);
   while (Date.now() < deadline) {
@@ -30,7 +29,23 @@ async function runThroughExperiment(page, options = {}) {
       if (kind === "outcome" && options.normalTiming) await page.waitForTimeout(1100);
       await page.screenshot({ path: path.join(options.screenshots, kind + ".png") });
     }
-    if (kind === "rating") {
+    if (await page.locator(".original-instructions").isVisible()) {
+      const artwork = page.locator(".instruction-image");
+      await artwork.evaluate(e => e.decode());
+      const source = await artwork.getAttribute("src");
+      const bounds = await artwork.boundingBox();
+      const viewport = page.viewportSize();
+      expect(bounds.x).toBeGreaterThanOrEqual(0);
+      expect(bounds.y).toBeGreaterThanOrEqual(0);
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
+      if (options.screenshots) {
+        const filename = source.split("/").pop();
+        await page.screenshot({ path: path.join(options.screenshots, filename + ".png") });
+      }
+      await page.keyboard.press("Space");
+      await expect(page.locator(`.instruction-image[src="${source}"]`)).toHaveCount(0);
+    } else if (kind === "rating") {
       const slider = page.locator('input[type="range"]');
       await slider.focus();
       await page.keyboard.press("ArrowRight");
@@ -72,8 +87,9 @@ async function runThroughExperiment(page, options = {}) {
       await page.locator('input[type="number"]').fill("24");
       await page.locator('input[value="Continue"]').click();
     } else if (await page.getByRole("button", { name: "Continue", exact: true }).isVisible()) {
-      if (options.screenshots && instructions++ === 0) {
-        await page.screenshot({ path: path.join(options.screenshots, "instructions.png") });
+      if (options.screenshots) {
+        const phase = await page.evaluate(() => window.__jsPsych.getCurrentTrial().data.phase || "instructions");
+        await page.screenshot({ path: path.join(options.screenshots, phase + ".png") });
       }
       await page.getByRole("button", { name: "Continue", exact: true }).click();
     } else {
