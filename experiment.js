@@ -26,7 +26,7 @@ const EXPERIMENT = {
 
   // Prolific: if set, participants are redirected to Prolific when they finish.
   // Leave empty for local testing or non-Prolific samples.
-  prolific_completion_code: "",
+  prolific_completion_code: "CBORQRKS",
 
   // Contact shown in consent and debrief.
   contact_email: "yifangsl@stanford.edu",
@@ -117,13 +117,13 @@ if (USE_EMULATOR && URL_PARAMS.get("cc")) EXPERIMENT.prolific_completion_code = 
         msg.innerHTML = "<h2 class='thanks'>Task ended</h2><p>Three practice responses were missed, so the task has ended. You may close this window.</p>";
         return;
       }
-      if (result.ok && EXPERIMENT.prolific_completion_code && !USE_EMULATOR) {
+      if (result.ok && EXPERIMENT.prolific_completion_code && !USE_EMULATOR && !OFFLINE_PREVIEW) {
         msg.innerHTML = "<p class='thanks'>Saved. Returning you to Prolific…</p>";
         window.location.href =
           "https://app.prolific.com/submissions/complete?cc=" + EXPERIMENT.prolific_completion_code;
         return;
       }
-      // In emulator/test runs we stay on the page instead of navigating to Prolific, so that
+      // In emulator/offline-preview runs we stay on the page instead of navigating to Prolific, so that
       // setting a completion code can never turn `npm test` or CI red. Live runs redirect above.
       msg.innerHTML =
         "<h2 class='thanks'>All done</h2>" +
