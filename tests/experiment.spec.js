@@ -40,15 +40,15 @@ test("complete experiment saves every required measure and exercises timeout and
   const trials = await page.evaluate(() => window.__jsPsych.data.get().values());
   await info.attach("qa-trials", { body: JSON.stringify(trials, null, 2), contentType: "application/json" });
   const select = task => trials.filter(t => t.task === task);
-  expect(select("instructions").filter(t => t.instruction_asset).map(t => t.instruction_asset)).toEqual([
-    "instructions/overallintro.svg", "instructions/rating2.svg", "instructions/delintro2.svg",
-    "instructions/delintro3.svg", "instructions/learning2.svg", "instructions/memory2.svg",
+  expect(select("instructions").map(t => t.phase)).toEqual([
+    "welcome", "ratings", "deliberation", "practice2", "decision_round", "outcomes", "final_choices", "memory",
   ]);
-  expect(select("instructions").filter(t => t.instruction_presentation === "original_svg").every(t => t.response === " ")).toBe(true);
+  expect(select("instructions").every(t => t.instruction_presentation === "reviewed_text" && t.response === 0)).toBe(true);
   const outcomeInstructions = select("instructions").find(t => t.phase === "outcomes");
-  expect(outcomeInstructions.instruction_presentation).toBe("exp1_adapted_text");
-  expect(outcomeInstructions.stimulus).toContain("decision round of the deliberation phase");
-  expect(outcomeInstructions.stimulus).not.toContain("first round");
+  expect(outcomeInstructions.stimulus).toContain("Decision Round of the Deliberation Phase");
+  expect(outcomeInstructions.stimulus).toContain("Board of Evaluation");
+  expect(select("instructions").find(t => t.phase === "memory").stimulus).toContain("bonus memory test");
+  expect(trials.every(t => t.instructions_version === "exp1-concise-reviewed")).toBe(true);
   expect(trials[0].task).toBe("consent");
   expect(trials.at(-1).task).toBe("debrief");
   expect(select("preference_rating")).toHaveLength(24);
@@ -127,14 +127,6 @@ test("three practice timeouts end the session and mark it incomplete", async ({ 
   await page.goto(query());
   await page.getByRole("button", { name: "I agree to participate" }).click();
   while (!(await page.locator('[data-screen="deliberation"]').isVisible())) {
-    const artwork = page.locator(".instruction-image");
-    if (await artwork.count()) {
-      await artwork.evaluate(e => e.decode());
-      const source = await artwork.getAttribute("src");
-      await page.keyboard.press("Space");
-      await expect(page.locator(`.instruction-image[src="${source}"]`)).toHaveCount(0);
-      continue;
-    }
     if (await page.locator('input[type="range"]').isVisible()) {
       await page.locator('input[type="range"]').focus();
       await page.keyboard.press("ArrowRight");
@@ -156,21 +148,20 @@ test("three practice timeouts end the session and mark it incomplete", async ({ 
   }
 });
 
-for (const asset of ["stimuli/shrimp_exemplar1.jpg", "instructions/memory2.svg"]) {
-test(`missing image prevents entry into the task: ${asset}`, async ({ page }) => {
-  await page.route("**/" + asset, route => route.fulfill({ status: 404, body: "missing" }));
+test("missing image prevents entry into the task", async ({ page }) => {
+  await page.route("**/stimuli/shrimp_exemplar1.jpg", route => route.fulfill({ status: 404, body: "missing" }));
   await page.goto(query());
   await page.getByRole("button", { name: "I agree to participate" }).click();
   await expect(page.getByText("Images could not be loaded")).toBeVisible();
   await expect(page.locator('[data-screen="rating"]')).toHaveCount(0);
 });
-}
 
 test("production settings retain original response windows and outcome delay", async ({ page }) => {
   // No qa=1: verify normal experiment parameters, while forcing database offline.
   await page.goto("/?preview=1");
   await page.getByRole("button", { name: "I agree to participate" }).click();
   await page.waitForFunction(() => window.__jsPsych && window.__design);
+  expect(await page.evaluate(() => EXPERIMENT.id)).toBe("wang2026-exp1-pilot-b");
   const data = await page.evaluate(() => {
     const timeline = window.__jsPsych.getTimeline();
     const flattened = [];

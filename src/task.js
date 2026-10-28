@@ -15,10 +15,9 @@
   const sideBySide = (left, right, selected = null) =>
     `<div class="object-pair">${image(left, selected === "left" ? "selected" : "")}${image(right, selected === "right" ? "selected" : "")}</div>`;
   const keys = '<p class="key-hint"><kbd>J</kbd> Left <span class="key-gap"></span> Right <kbd>K</kbd></p>';
-  // Supplied OSF instruction artwork, preserved byte-for-byte. delintro4.svg is
-  // deliberately excluded: its 7 s/retry/SONA instructions do not describe Exp 1.
-  const instructionImages = ["overallintro.svg", "rating2.svg", "delintro2.svg",
-    "delintro3.svg", "learning2.svg", "memory2.svg"].map(f => "instructions/" + f);
+  // Instruction text reviewed with the student against the Exp 1 procedure.
+  // Supplied Exp 2 SVGs remain in instructions/ as references; participant screens
+  // use concise text, consistent phase names, and Exp 1 timings/stopping rules.
 
   function build(jsPsych, saver, config, params) {
     const local = ["localhost", "127.0.0.1"].includes(location.hostname);
@@ -31,8 +30,8 @@
     window.__design = design;
     window.__jsPsych = jsPsych;
     const metadata = {
-      design: "within-subjects", paradigm: "wang2026-experiment1", paradigm_version: "1.1.0-original-instructions",
-      instructions_version: "osf-instructions-exp1-adaptations",
+      design: "within-subjects", paradigm: "wang2026-experiment1", paradigm_version: "1.2.0-approved-instructions",
+      instructions_version: "exp1-concise-reviewed",
       random_seed: seed, stimulus_manifest: design.manifest_version, qa_run: qa, preview_run: preview,
       practice_miss_limit: 3, source_protocol: "paper-exp1-and-archived-exp1-records",
     };
@@ -45,35 +44,34 @@
       badge.textContent = qa ? "AUTOMATED TEST: accelerated timing; exclude these data" : "PREVIEW: data download only; no live database writes";
       document.body.appendChild(badge);
     }
-    const intro = (title, body, name, source = null) => ({
+    const intro = (title, body, name) => ({
       type: jsPsychHtmlButtonResponse,
-      stimulus: `<section class="instructions-screen"><h2>${title}</h2>${body}</section>`,
+      stimulus: `<section class="instructions-screen" data-instruction-phase="${name}"><h2>${title}</h2>${body}</section>`,
       choices: ["Continue"], data: { task: "instructions", phase: name,
-        ...(source ? { instruction_asset: source, instruction_presentation: "exp1_adapted_text" } : {}) },
-    });
-    const originalIntro = (filename, title, phase) => ({
-      type: jsPsychHtmlKeyboardResponse,
-      stimulus: `<section class="original-instructions"><img class="instruction-image" src="instructions/${filename}" alt="${title}"></section>`,
-      choices: [" "],
-      data: { task: "instructions", phase, instruction_asset: "instructions/" + filename,
-        instruction_presentation: "original_svg" },
+        instruction_presentation: "reviewed_text" },
     });
     const fixation = () => ({ type: jsPsychHtmlKeyboardResponse,
       stimulus: '<div class="fixation">+</div>', choices: "NO_KEYS", trial_duration: duration(750),
       data: { task: "fixation" } });
     const timeline = [{
       type: jsPsychPreload,
-      images: [...instructionImages, ...[...new Set(window.STIMULUS_MANIFEST.categories.concat(window.STIMULUS_MANIFEST.memory_distractor_categories).flatMap(c => c.files))].map(f => "stimuli/" + f)],
+      images: [...new Set(window.STIMULUS_MANIFEST.categories.concat(window.STIMULUS_MANIFEST.memory_distractor_categories).flatMap(c => c.files))].map(f => "stimuli/" + f),
       message: "<h2>Loading study images</h2><p>Please keep this window open.</p>",
       max_load_time: 60000, continue_after_error: false,
       error_message: "<h2>Images could not be loaded</h2><p>Please check your connection and contact the researcher. Do not continue with missing images.</p>",
       data: { task: "preload" },
-    }, originalIntro("overallintro.svg", "Instructions", "welcome"),
-    originalIntro("rating2.svg", "Instructions - Record Browsing Phase", "ratings")];
+    }, intro("Welcome", `<p>In this study, you will choose pictures to appear on stamps.
+      Your goal is to build a portfolio of the most valuable stamps.</p>
+      <p>You will first rate pictures, then make choices, learn the values of your chosen stamps,
+      and build your portfolio. Instructions will appear before each phase.</p>`, "welcome"),
+    intro("Pre-experimental Phase: Picture Ratings", `<p>You will see pictures one at a time.
+      Rate how much you personally like each picture.</p>
+      <p>Move the slider from <strong>Strongly dislike</strong> to <strong>Strongly like</strong>,
+      then select <strong>Continue</strong>. No information about stamp values will be provided during this phase.</p>`, "ratings")];
 
     for (const [i, item] of design.ratings.entries()) {
       timeline.push({ type: jsPsychHtmlSliderResponse,
-        stimulus: `<div data-screen="rating" data-event="rating-${i}"><p class="phase-label">Picture preferences</p>${image(item.image)}</div>`,
+        stimulus: `<div data-screen="rating" data-event="rating-${i}"><p class="phase-label">Pre-experimental Phase: Picture Ratings</p>${image(item.image)}</div>`,
         prompt: "<p>How much do you personally like this picture?</p>",
         labels: ["Strongly dislike", "Neutral", "Strongly like"], min: 0, max: 100, slider_start: 50,
         slider_width: 540, require_movement: true, button_label: "Continue",
@@ -82,14 +80,12 @@
         on_finish: data => { data.rating = data.response; },
       });
     }
-    timeline.push(originalIntro("delintro2.svg", "Instructions - Deliberation Phase: practice", "deliberation"),
-      originalIntro("delintro3.svg", "Instructions - Deliberation Phase: decision round", "deliberation_decisions"),
-      intro("Practice response reminder", `<p>During each practice round, respond within <strong>5 seconds</strong>:
-      press <kbd>J</kbd> for the left picture or <kbd>K</kbd> for the right picture. Your choice will briefly have a green border.</p>
-      <p>If you miss a practice response, you will see a warning and move to the next trial.
-      The task will end if you miss <strong>three practice responses</strong> across the two practice rounds.</p>
-      <p>During the second practice round, take the time you need to type your reason after choosing.
-      There is no time limit for choices in the third (decision) round.</p>`, "practice_response_reminder"));
+    timeline.push(intro("Deliberation Phase — Practice Round 1", `<p>You will see the same four picture pairs
+      across two practice rounds and one Decision Round. Choose the picture you think will appear on the more valuable stamp.</p>
+      <p>Press <strong>J for the left picture</strong> or <strong>K for the right picture</strong>.
+      A green border will show your selection.</p>
+      <p>During practice, respond within <strong>5 seconds</strong>. If you miss a response, you will see a warning
+      and move to the next trial. The task will end if you miss <strong>three responses across the two practice rounds</strong>.</p>`, "deliberation"));
 
     function deliberation(pair, round, order) {
       // jsPsych evaluates stimulus functions before on_start; initialize display state now.
@@ -99,7 +95,7 @@
       const choice = {
         type: jsPsychHtmlKeyboardResponse, choices: ["j", "k"],
         trial_duration: round === 3 ? null : responseWindow(5000),
-        stimulus: () => `<div data-screen="deliberation" data-event="delib-${round}-${order}"><p class="phase-label">${round === 3 ? "Decision round" : "Practice round " + round}</p>${sideBySide(left.anchor, right.anchor)}<p>Which picture will be on the more valuable stamp?</p>${keys}</div>`,
+        stimulus: () => `<div data-screen="deliberation" data-event="delib-${round}-${order}"><p class="phase-label">Deliberation Phase — ${round === 3 ? "Decision Round" : "Practice Round " + round}</p>${sideBySide(left.anchor, right.anchor)}<p>Which picture will be on the more valuable stamp?</p>${keys}</div>`,
         save_trial_parameters: { stimulus: false }, data: { task, trial_id: task, round, pair_id: pair.id },
         on_start: trial => {
           trial.data = { ...trial.data, left_image: left.anchor, right_image: right.anchor,
@@ -133,7 +129,7 @@
         stimulus: () => `<div data-screen="selection">${sideBySide(left.anchor, right.anchor, selected)}${keys}</div>`,
         save_trial_parameters: { stimulus: false }, data: { task: "selection_feedback", phase: task, pair_id: pair.id } };
       const warning = { type: jsPsychHtmlKeyboardResponse, choices: "NO_KEYS", trial_duration: duration(3000),
-        stimulus: "<p>You did not respond. Please make a choice within 5 seconds on the next practice trial.</p>",
+        stimulus: "<p>You did not respond. Please make your next practice choice within 5 seconds.</p>",
         data: { task: "missed_response_warning", pair_id: pair.id } };
       const children = [choice, { timeline: [feedback], conditional_function: () => !missed },
         { timeline: [warning], conditional_function: () => missed }];
@@ -148,19 +144,23 @@
       return { timeline: children };
     }
     for (let round = 1; round <= 3; round++) {
-      if (round === 2) timeline.push(intro("Practice round 2", "<p>Choose again, then explain each choice. Respond to the picture pair within 5 seconds; take the time you need to type your reason.</p>", "practice2"));
-      if (round === 3) timeline.push(intro("Decision round", "<p>Now make your final choice for each pair. These choices determine which pictures go on your stamps. There is no time limit for this round.</p>", "decision_round"));
+      if (round === 2) timeline.push(intro("Deliberation Phase — Practice Round 2", `<p>Choose between the pictures again,
+        then explain why you made each choice.</p>
+        <p>Your practice choices will not be submitted to the Board of Evaluation, but your explanations may influence
+        its judgment of the stamps’ values. Please consider your reasons carefully.</p>
+        <p>Choose within <strong>5 seconds</strong>. Take the time you need to type your explanation.</p>`, "practice2"));
+      if (round === 3) timeline.push(intro("Deliberation Phase — Decision Round", `<p>Now make your final choice for each pair.
+        These choices determine which pictures will be submitted to the Board of Evaluation.</p>
+        <p>Press <strong>J for the left picture</strong> or <strong>K for the right picture</strong>.
+        There is <strong>no time limit</strong> for this round.</p>`, "decision_round"));
       D.shuffle(design.pairs, design.random).forEach((p, i) => timeline.push(deliberation(p, round, i)));
     }
 
     timeline.push({
-      // learning2.svg says "first round"; Exp 1 Methods 2.3.3 specifies the
-      // decision (third) round. Preserve the rest of the supplied wording.
-      timeline: [intro("Instructions - Outcome Announcement", `<p>The Board of Evaluations has now judged your choices
-        from the decision round of the deliberation phase and made decisions on the value of your chosen items.
-        You will only learn the value of the items you chose during that decision round.
-        Please pay close attention to these values to aid in the next round of portfolio building.</p>`,
-        "outcomes", "instructions/learning2.svg")],
+      timeline: [intro("Choice Outcome Phase", `<p>The Board of Evaluation has evaluated the pictures you selected in the
+        <strong>Decision Round of the Deliberation Phase</strong>.</p>
+        <p>You will now see whether each chosen stamp has a <strong>Reward</strong> or <strong>No reward</strong>.
+        Pay close attention to these outcomes for the next phase.</p>`, "outcomes")],
       on_timeline_start: () => {
         D.assignRewards(design);
         const assignments = design.pairs.map(p => ({ pair_id: p.id,
@@ -171,7 +171,7 @@
     });
     for (const pair of D.shuffle(design.pairs, design.random)) {
       timeline.push({ type: jsPsychHtmlKeyboardResponse, choices: "NO_KEYS", trial_duration: duration(3000),
-        stimulus: () => `<div data-screen="outcome" class="outcome-screen"><p class="phase-label">Stamp values</p><div class="object-pair">${image(pair.chosen.anchor)}<div id="reward-reveal" class="reward-panel" style="visibility:hidden"><span class="reward-symbol ${pair.reward ? "rewarded" : "neutral"}">${pair.reward ? "+" : "×"}</span><p>${pair.reward ? "Reward" : "No reward"}</p></div></div></div>`,
+        stimulus: () => `<div data-screen="outcome" class="outcome-screen"><p class="phase-label">Choice Outcome Phase</p><div class="object-pair">${image(pair.chosen.anchor)}<div id="reward-reveal" class="reward-panel" style="visibility:hidden"><span class="reward-symbol ${pair.reward ? "rewarded" : "neutral"}">${pair.reward ? "+" : "×"}</span><p>${pair.reward ? "Reward" : "No reward"}</p></div></div></div>`,
         on_load: () => jsPsych.pluginAPI.setTimeout(() => {
           const panel = document.getElementById("reward-reveal");
           if (panel) panel.style.visibility = "visible";
@@ -184,9 +184,10 @@
     }
 
     timeline.push({
-      timeline: [intro("Build your portfolio", `<p>You will now choose between new pictures. Choose the one you think will be placed on the more valuable stamp, using what you have learned.</p>
-        <p>Press <kbd>J</kbd> for left or <kbd>K</kbd> for right. Respond within <strong>7 seconds</strong>.</p>
-        <p>Occasionally, a letter will appear. When it does, press that letter on your keyboard.</p>`, "final_choices")],
+      timeline: [intro("Final Decision Phase: Build Your Portfolio", `<p>You will now choose between a different set of pictures.
+        Use what you learned in the <strong>Choice Outcome Phase</strong> to choose the picture you think will appear on the more valuable stamp.</p>
+        <p>For each picture pair, press <strong>J for left</strong> or <strong>K for right</strong> within <strong>7 seconds</strong>.</p>
+        <p>Occasionally, a letter will appear. When it does, press the matching letter on your keyboard.</p>`, "final_choices")],
       on_timeline_start: () => D.finalChoices(design),
     });
     for (let i = 0; i < 48; i++) {
@@ -194,7 +195,7 @@
       timeline.push({ type: jsPsychHtmlKeyboardResponse, choices: ["j", "k"], trial_duration: responseWindow(7000),
         stimulus: () => {
           item = design.final_choices[i];
-          return `<div data-screen="final-choice" data-event="final-${i}"><p class="phase-label">Build your portfolio</p>${sideBySide(item.left.image, item.right.image)}<p>Which picture will be on the more valuable stamp?</p>${keys}</div>`;
+          return `<div data-screen="final-choice" data-event="final-${i}"><p class="phase-label">Final Decision Phase: Build Your Portfolio</p>${sideBySide(item.left.image, item.right.image)}<p>Which picture will be on the more valuable stamp?</p>${keys}</div>`;
         },
         save_trial_parameters: { stimulus: false }, data: { task: "final_choice", trial_id: "value_judgement", choice_number: i + 1 },
         on_start: trial => {
@@ -245,7 +246,11 @@
     }
 
     timeline.push({
-      timeline: [originalIntro("memory2.svg", "Instructions - Memory Test", "memory")],
+      timeline: [intro("Memory Test", `<p>Congratulations on completing your stamp portfolio! You will now complete a bonus memory test.</p>
+        <p>For each picture, decide whether you chose it in the <strong>Decision Round of the Deliberation Phase</strong>.</p>
+        <p>Press <strong>1 for Yes</strong> or <strong>0 for No</strong>.</p>
+        <p>If a pairing question appears, select the picture that was shown alongside it during the Deliberation Phase.
+        Press <strong>1, 2, 3, or 4</strong> to select your answer.</p>`, "memory")],
       on_timeline_start: () => D.memoryTrials(design, window.STIMULUS_MANIFEST),
     });
     for (let i = 0; i < 8; i++) {
@@ -253,7 +258,7 @@
       timeline.push({ type: jsPsychHtmlKeyboardResponse, choices: ["1", "0"], trial_duration: qa ? 1500 : 90000,
         stimulus: () => {
           item = design.memory_trials[i];
-          return `<div data-screen="item-memory" data-event="memory-${i}"><p class="phase-label">Memory task</p>${image(item.image)}<p>Did you choose this picture in the earlier decision round?</p><p class="key-hint"><kbd>1</kbd> Yes (old) <span class="key-gap"></span><kbd>0</kbd> No (new)</p></div>`;
+          return `<div data-screen="item-memory" data-event="memory-${i}"><p class="phase-label">Memory Test</p>${image(item.image)}<p>Did you choose this picture in the Decision Round of the Deliberation Phase?</p><p class="key-hint"><kbd>1</kbd> Yes <span class="key-gap"></span><kbd>0</kbd> No</p></div>`;
         },
         save_trial_parameters: { stimulus: false }, data: { task: "item_memory", trial_id: "memory_test" },
         on_start: trial => {
@@ -275,7 +280,7 @@
         },
       }, {
         timeline: [{ type: jsPsychHtmlKeyboardResponse, choices: ["1", "2", "3", "4"], trial_duration: qa ? 1500 : 90000,
-          stimulus: () => `<div data-screen="association-memory" data-event="association-${i}"><p class="phase-label">Memory task</p><p>Which picture was paired with the picture you just recognized?</p><div class="memory-options">${item.options.map((o, j) => `<figure>${image(o.image)}<figcaption><kbd>${j + 1}</kbd></figcaption></figure>`).join("")}</div><p>Press the number below your choice.</p></div>`,
+          stimulus: () => `<div data-screen="association-memory" data-event="association-${i}"><p class="phase-label">Memory Test</p><p>Which picture was shown alongside the picture you just recognized during the Deliberation Phase?</p><div class="memory-options">${item.options.map((o, j) => `<figure>${image(o.image)}<figcaption><kbd>${j + 1}</kbd></figcaption></figure>`).join("")}</div><p>Press the number below your choice.</p></div>`,
           save_trial_parameters: { stimulus: false }, data: { task: "associative_memory", trial_id: "pick_pair" },
           on_start: trial => {
             trial.data = { ...trial.data, memory_id: item.id, pair_id: item.pair_id, cue_image: item.image,
@@ -296,7 +301,8 @@
     }
     // Optional course-template questions stay after all scientific measures.
     timeline.push({ type: jsPsychSurvey,
-      survey_json: { showQuestionNumbers: "off", completeText: "Continue", pages: [{ elements: [
+      survey_json: { title: "Background Questions", description: "The following questions are optional. You may skip any question you prefer not to answer.",
+        showQuestionNumbers: "off", completeText: "Continue", pages: [{ elements: [
         { type: "text", name: "age", title: "How old are you? (optional)", inputType: "number", min: 18, max: 120 },
         { type: "radiogroup", name: "gender", title: "What is your gender? (optional)", choices: ["Woman", "Man", "Non-binary", "Prefer not to say"], showOtherItem: true },
         { type: "boolean", name: "native_english", title: "Is English your first language? (optional)", labelTrue: "Yes", labelFalse: "No" },
@@ -305,14 +311,15 @@
       questions: [{ prompt: "How clear were the instructions? (optional)", name: "clarity", required: false,
         labels: ["Very unclear", "Unclear", "Neutral", "Clear", "Very clear"] }], data: { task: "feedback_likert" },
     }, { type: jsPsychSurveyText,
-      questions: [{ prompt: "Any comments about the study? Please do not include your name or contact details. (optional)", name: "comments", rows: 3 }], data: { task: "feedback_text" },
+      questions: [{ prompt: "Do you have any comments about the study or problems you encountered? Please do not include your name or contact details. (optional)", name: "comments", rows: 3 }], data: { task: "feedback_text" },
     }, { type: jsPsychHtmlButtonResponse, choices: ["Finish"],
-      stimulus: `<h2>Debrief</h2><p>Thank you for participating. This study investigates how learning an outcome for something we choose
-        affects later choices about related pictures, including pictures related to options we did not choose.</p>
-        <p>Two of your four chosen pictures were randomly assigned a reward and two no reward. There was no Board of Evaluation judging your choices, and the written explanations did not determine these assignments.
-        That instruction encouraged careful consideration of the picture pairs. Pictures you did not choose were never assigned an experienced outcome.</p>
-        <p>The final memory task helps examine how memory for earlier pictures and their pairings relates to later choices.</p>
-        <p>Questions: <a href="mailto:${config.contact_email}">${config.contact_email}</a>. Select Finish to save your responses.</p>`,
+      stimulus: `<h2>Debrief</h2><p>Thank you for participating. This study examines how learning an outcome for a chosen picture
+        affects later choices about related pictures, including pictures related to options you did not choose.</p>
+        <p>Two of your four chosen pictures were randomly assigned a reward, and two no reward. There was no Board of Evaluation,
+        and your written explanations did not determine these outcomes. That instruction was used to encourage careful consideration of your choices.</p>
+        <p>The memory test examined your memory for the earlier pictures and their pairings.</p>
+        <p>For questions, contact <a href="mailto:${config.contact_email}">${config.contact_email}</a>.
+        Select <strong>Finish</strong> to save your responses.</p>`,
       data: { task: "debrief" },
     });
     return { timeline, design, qa, preview };

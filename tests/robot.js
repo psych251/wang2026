@@ -1,7 +1,7 @@
 const { expect } = require("@playwright/test");
 const path = require("node:path");
 
-// Only accelerated QA sessions use this helper. No robot records are Pilot A observations.
+// Only accelerated QA sessions use this helper. Robot records are not pilot observations.
 async function runThroughExperiment(page, options = {}) {
   const seen = new Set();
   let timedOut = false;
@@ -29,23 +29,7 @@ async function runThroughExperiment(page, options = {}) {
       if (kind === "outcome" && options.normalTiming) await page.waitForTimeout(1100);
       await page.screenshot({ path: path.join(options.screenshots, kind + ".png") });
     }
-    if (await page.locator(".original-instructions").isVisible()) {
-      const artwork = page.locator(".instruction-image");
-      await artwork.evaluate(e => e.decode());
-      const source = await artwork.getAttribute("src");
-      const bounds = await artwork.boundingBox();
-      const viewport = page.viewportSize();
-      expect(bounds.x).toBeGreaterThanOrEqual(0);
-      expect(bounds.y).toBeGreaterThanOrEqual(0);
-      expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
-      expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
-      if (options.screenshots) {
-        const filename = source.split("/").pop();
-        await page.screenshot({ path: path.join(options.screenshots, filename + ".png") });
-      }
-      await page.keyboard.press("Space");
-      await expect(page.locator(`.instruction-image[src="${source}"]`)).toHaveCount(0);
-    } else if (kind === "rating") {
+    if (kind === "rating") {
       const slider = page.locator('input[type="range"]');
       await slider.focus();
       await page.keyboard.press("ArrowRight");
@@ -87,6 +71,14 @@ async function runThroughExperiment(page, options = {}) {
       await page.locator('input[type="number"]').fill("24");
       await page.locator('input[value="Continue"]').click();
     } else if (await page.getByRole("button", { name: "Continue", exact: true }).isVisible()) {
+      const viewport = page.viewportSize();
+      for (const element of [page.locator(".instructions-screen"), page.getByRole("button", { name: "Continue", exact: true })]) {
+        const bounds = await element.boundingBox();
+        expect(bounds.x).toBeGreaterThanOrEqual(0);
+        expect(bounds.y).toBeGreaterThanOrEqual(0);
+        expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+        expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
+      }
       if (options.screenshots) {
         const phase = await page.evaluate(() => window.__jsPsych.getCurrentTrial().data.phase || "instructions");
         await page.screenshot({ path: path.join(options.screenshots, phase + ".png") });
