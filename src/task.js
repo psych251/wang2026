@@ -30,8 +30,8 @@
     window.__design = design;
     window.__jsPsych = jsPsych;
     const metadata = {
-      design: "within-subjects", paradigm: "wang2026-experiment1", paradigm_version: "1.2.0-approved-instructions",
-      instructions_version: "exp1-concise-reviewed",
+      design: "within-subjects", paradigm: "wang2026-experiment1", paradigm_version: "1.2.1-pilot-b-final-instructions",
+      instructions_version: "exp1-concise-reviewed-v2",
       random_seed: seed, stimulus_manifest: design.manifest_version, qa_run: qa, preview_run: preview,
       practice_miss_limit: 3, source_protocol: "paper-exp1-and-archived-exp1-records",
     };
@@ -72,7 +72,7 @@
     for (const [i, item] of design.ratings.entries()) {
       timeline.push({ type: jsPsychHtmlSliderResponse,
         stimulus: `<div data-screen="rating" data-event="rating-${i}"><p class="phase-label">Pre-experimental Phase: Picture Ratings</p>${image(item.image)}</div>`,
-        prompt: "<p>How much do you personally like this picture?</p>",
+        prompt: '<p class="rating-question">How much do you personally like this picture?</p>',
         labels: ["Strongly dislike", "Neutral", "Strongly like"], min: 0, max: 100, slider_start: 50,
         slider_width: 540, require_movement: true, button_label: "Continue",
         save_trial_parameters: { stimulus: false },
@@ -313,13 +313,17 @@
     }, { type: jsPsychSurveyText,
       questions: [{ prompt: "Do you have any comments about the study or problems you encountered? Please do not include your name or contact details. (optional)", name: "comments", rows: 3 }], data: { task: "feedback_text" },
     }, { type: jsPsychHtmlButtonResponse, choices: ["Finish"],
-      stimulus: `<h2>Debrief</h2><p>Thank you for participating. This study examines how learning an outcome for a chosen picture
-        affects later choices about related pictures, including pictures related to options you did not choose.</p>
-        <p>Two of your four chosen pictures were randomly assigned a reward, and two no reward. There was no Board of Evaluation,
-        and your written explanations did not determine these outcomes. That instruction was used to encourage careful consideration of your choices.</p>
-        <p>The memory test examined your memory for the earlier pictures and their pairings.</p>
-        <p>For questions, contact <a href="mailto:${config.contact_email}">${config.contact_email}</a>.
-        Select <strong>Finish</strong> to save your responses.</p>`,
+      stimulus: `<section class="debrief-screen"><h2>Debrief</h2>
+        <p>This study asks how the outcomes of earlier choices guide later decisions about new pictures,
+        including pictures related to options you did not choose. For example, learning that a stamp you chose
+        was not valuable might lead you to think the alternative would have been better.
+        We want to understand whether that judgment also extends to other pictures in the same category.</p>
+        <p>The memory test helps us explore how remembering earlier choices and picture pairings relates to these later decisions.</p>
+        <p>The stamp values were assigned for the experiment: two of your four chosen pictures were randomly assigned
+        a reward, and two were assigned no reward. There was no Board of Evaluation, and your written explanations did not determine
+        these outcomes. This cover story was used to encourage careful consideration of your choices.</p>
+        <p>For questions, contact <a href="mailto:${config.contact_email}"><strong>${config.contact_email}</strong></a>.
+        Select <strong>Finish</strong> to save your responses.</p></section>`,
       data: { task: "debrief" },
     });
     return { timeline, design, qa, preview };

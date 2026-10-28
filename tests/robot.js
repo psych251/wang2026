@@ -20,14 +20,19 @@ async function runThroughExperiment(page, options = {}) {
       return;
     }
     const screen = page.locator("[data-screen]");
-    const { kind, event } = await page.evaluate(() => {
+    const { kind, event, task } = await page.evaluate(() => {
       const node = document.querySelector("[data-screen]");
-      return { kind: node ? node.dataset.screen : null, event: node ? node.dataset.event : null };
+      return { kind: node ? node.dataset.screen : null, event: node ? node.dataset.event : null,
+        task: window.__jsPsych.getCurrentTrial()?.data?.task };
     });
     if (options.screenshots && kind && !seen.has(kind)) {
       seen.add(kind);
       if (kind === "outcome" && options.normalTiming) await page.waitForTimeout(1100);
       await page.screenshot({ path: path.join(options.screenshots, kind + ".png") });
+    }
+    if (options.screenshots && ["choice_rationale", "demographics", "feedback_likert", "feedback_text"].includes(task) && !seen.has(task)) {
+      seen.add(task);
+      await page.screenshot({ path: path.join(options.screenshots, task + ".png") });
     }
     if (kind === "rating") {
       const slider = page.locator('input[type="range"]');
@@ -62,15 +67,17 @@ async function runThroughExperiment(page, options = {}) {
       wrongAssociation ||= key !== answer;
       await page.keyboard.press(String(key));
       await page.waitForFunction(e => !document.querySelector(`[data-event="${e}"]`), event);
-    } else if (await page.locator("#jspsych-survey-text-next").isVisible()) {
+    // Survey plugins share Continue controls. Route using the active trial task
+    // rather than successive DOM checks that can straddle a screen transition.
+    } else if (task === "choice_rationale" || task === "feedback_text") {
       await page.locator("textarea").fill("Automated QA test response; exclude from participant analyses.");
       await page.locator("#jspsych-survey-text-next").click();
-    } else if (await page.locator("#jspsych-survey-likert-next").isVisible()) {
+    } else if (task === "feedback_likert") {
       await page.locator("#jspsych-survey-likert-next").click();
-    } else if (await page.locator('input[value="Continue"]').isVisible()) {
-      await page.locator('input[type="number"]').fill("24");
-      await page.locator('input[value="Continue"]').click();
-    } else if (await page.getByRole("button", { name: "Continue", exact: true }).isVisible()) {
+    } else if (task === "demographics") {
+      await page.locator('[data-name="age"] input').fill("24");
+      await page.getByRole("button", { name: "Continue", exact: true }).click();
+    } else if (task === "instructions") {
       const viewport = page.viewportSize();
       for (const element of [page.locator(".instructions-screen"), page.getByRole("button", { name: "Continue", exact: true })]) {
         const bounds = await element.boundingBox();
@@ -81,7 +88,7 @@ async function runThroughExperiment(page, options = {}) {
       }
       if (options.screenshots) {
         const phase = await page.evaluate(() => window.__jsPsych.getCurrentTrial().data.phase || "instructions");
-        await page.screenshot({ path: path.join(options.screenshots, phase + ".png") });
+        await page.screenshot({ path: path.join(options.screenshots, "instructions-" + phase + ".png") });
       }
       await page.getByRole("button", { name: "Continue", exact: true }).click();
     } else {

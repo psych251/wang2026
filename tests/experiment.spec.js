@@ -48,7 +48,7 @@ test("complete experiment saves every required measure and exercises timeout and
   expect(outcomeInstructions.stimulus).toContain("Decision Round of the Deliberation Phase");
   expect(outcomeInstructions.stimulus).toContain("Board of Evaluation");
   expect(select("instructions").find(t => t.phase === "memory").stimulus).toContain("bonus memory test");
-  expect(trials.every(t => t.instructions_version === "exp1-concise-reviewed")).toBe(true);
+  expect(trials.every(t => t.instructions_version === "exp1-concise-reviewed-v2")).toBe(true);
   expect(trials[0].task).toBe("consent");
   expect(trials.at(-1).task).toBe("debrief");
   expect(select("preference_rating")).toHaveLength(24);
