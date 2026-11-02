@@ -50,6 +50,7 @@ library(tidyverse)
 library(jsonlite)
 library(rstanarm)
 library(coda)
+library(coin)
 library(pwr)
 options(mc.cores = min(4L, parallel::detectCores()))
 experiment_id <- Sys.getenv("PSYCH251_PHASE1_ID", "wang2026-exp1-pilot-b")
@@ -93,10 +94,11 @@ original_d <- abs(original_summary$unchosen_cohens_d)
 # AI use statement
 
 | Tool and model | What it was used for | How you checked the output |
-|------------------------|------------------------|------------------------|
+|----|----|----|
 | ChatGPT (GPT-6.1 Sol) | Implementing the experimental paradigm | Compared the implementation against the original experiment code and tested with pilots to verify the task procedure and recorded data. |
 | ChatGPT (GPT-6.1 Sol) | Conducting the power analysis | Compared the code with the power analysis code for Experiment 2 of the original study. |
-| ChatGPT (GPT-6.1 Sol) | Preprocessing data and implementing analysis code, tables and figures | Need to be further checked with more datapoints. |
+| ChatGPT (GPT-6.1 Sol) | Preprocessing data and implementing analysis code, tables and figures | Tested preprocessing and scoring using synthetic data and Pilot B exports. Further assessment of model stability requires a larger sample. |
+| ChatGPT (GPT-6.1 Sol) | Checking consistency with the original analyses and documenting implementation differences | Compared the implemented analyses with the original Experiment 1 analysis code and reviewed the remaining differences. |
 | ChatGPT (GPT-6.1 Sol) | Fixing unknown completion code issue on Prolific | Confirmed the completion status was updated correctly for each participant. |
 
 I wrote all of the text in this report myself. AI tools were not used to write, rewrite or paraphrase it, and were not used to generate, alter, or impute any participant data. I take full responsibility for the content of this report, including any errors introduced by AI tools.
@@ -125,8 +127,7 @@ score_attention_checks <- function(trials) {
   if (!nrow(attention)) return(tibble(
     participant_id = character(), n_attention_checks = integer(),
     n_attention_correct = integer(), n_attention_nonresponses = integer(),
-    attention_accuracy = double(), attention_nonresponse_rate = double(),
-    exclude_attention_accuracy = logical(), exclude_attention_nonresponses = logical()))
+    attention_accuracy = double(), attention_nonresponse_rate = double()))
   attention |>
     mutate(attention_nonresponse = is.na(response) | response == "" |
              tolower(response) == "null",
@@ -137,9 +138,7 @@ score_attention_checks <- function(trials) {
               n_attention_correct = sum(attention_correct),
               n_attention_nonresponses = sum(attention_nonresponse), .groups = "drop") |>
     mutate(attention_accuracy = n_attention_correct / n_attention_checks,
-           attention_nonresponse_rate = n_attention_nonresponses / n_attention_checks,
-           exclude_attention_accuracy = attention_accuracy < 0.10,
-           exclude_attention_nonresponses = attention_nonresponse_rate > 0.90)
+           attention_nonresponse_rate = n_attention_nonresponses / n_attention_checks)
 }
 read_phase <- function(id) {
   dir <- file.path("..", "data", "raw", id)
@@ -150,24 +149,17 @@ read_phase <- function(id) {
     mutate(completed = as_bool(completed), practice_misses = as.numeric(practice_misses))
   trials <- read_export("trials.csv")
   errors <- if (file.exists(file.path(dir, "errors.csv"))) read_export("errors.csv") else tibble()
-  # Decision fixed on 2026-10-27 while Pilot B was underway, before full-sample
-  # collection. Exp1 paper: three missed practice responses. Exp1 source code
-  # counts <10% attention accuracy / >90% nonresponses without removing them;
-  # Exp2 source code applies those thresholds. This replication applies them.
-  # Denominators include ALL presented letter checks; misses are incorrect.
-  # A participant with no presented checks is not excluded on attention grounds.
+  # Descriptive attention scores use all presented checks as the denominator.
+  # Missing responses count as incorrect.
   attention <- score_attention_checks(trials)
   participants <- participants |> left_join(attention, by = "participant_id") |>
     mutate(across(c(n_attention_checks, n_attention_correct, n_attention_nonresponses),
-                  ~ coalesce(.x, 0L)),
-           across(c(exclude_attention_accuracy, exclude_attention_nonresponses),
-                  ~ coalesce(.x, FALSE)))
+                  ~ coalesce(.x, 0L)))
   complete <- participants |> filter(completed)
   # Completed export flag replaces the original platform's nonempty unique_code.
   # Keep the original stopping criterion; no memory-accuracy cutoff is added.
   keep <- complete |> filter(!as_bool(qa_run), !as_bool(preview_run),
-                             coalesce(practice_misses, 0) < 3,
-                             !exclude_attention_accuracy, !exclude_attention_nonresponses)
+                             coalesce(practice_misses, 0) < 3)
   retained <- trials |> filter(participant_id %in% keep$participant_id)
   ratings <- retained |> filter(task == "preference_rating") |>
     mutate(rt = as.numeric(rt), rating = as.numeric(rating)) |>
@@ -343,7 +335,7 @@ For comparison, 2.5 times the original sample would be 308 (rounded up from 307.
 
 ### Planned sample
 
-The experiment will recruit U.S. residents aged 18-35 who are fluent in English through Prolific. Participants must complete the experiment on a computer with a keyboard. Those who fail to respond on three timed practice trials or do not complete the experiment will be excluded. Participants are also excluded if accuracy on the letter attention checks is below 10% or if the nonresponse rate is above 90%. Data collection will continue until 118 participants pass the exclusion criteria, providing approximately 80% power.
+The experiment will recruit U.S. residents aged 18-35 who are fluent in English through Prolific. Participants must complete the experiment on a computer with a keyboard. Those who fail to respond on three timed practice trials or do not complete the experiment will be excluded. Data collection will continue until 118 participants pass the exclusion criteria, providing approximately 80% power.
 
 ### Materials
 
@@ -383,16 +375,16 @@ Participants are expected to finish the entire experiment in 10-20 minutes.
 
 **Secondary confirmatory and exploratory analyses.** Secondary confirmatory analyses will use multilevel Bayesian logistic regressions for chosen-category decisions and for chosen- and unchosen-category decisions combined. Exploratory follow-up analyses may include the original study’s Bayesian multilevel analyses of RT and adaptive choice, descriptive memory summaries, and memory–choice analyses using Spearman correlations and permutation tests.
 
-**Exclusions.** Participants are excluded if they fail to respond on three timed practice trials or do not complete the study. Participants are also excluded if accuracy on the letter attention checks is below 10% or if the nonresponse rate is above 90%. Both rates use all presented attention checks, and nonresponses count as incorrect. Participants with no presented attention checks are not excluded on this basis.
+**Exclusions.** Participants are excluded if they fail to respond on three timed practice trials or do not complete the study.
 
 ### Differences from the original study
 
 | Aspect | Original study | This replication | Expected to matter? |
-|------------------|-------------------|------------------|------------------|
+|----|----|----|----|
 | Sample | University of Chicago SONA and MTurk/CloudResearch | Prolific | Unlikely. Participants will be recruited using the same eligibility criteria. |
 | Stimuli | Ocean creatures category includes a cinnamon bun | Replaced the cinnamon bun with a shrimp | Unlikely. The replacement better matches the intended semantic category. |
 | Instructions | Long paragraphs in the original SVG instructions | Reconstructed shorter phase-specific instructions for better clarity, with typos corrected | Unlikely though there is a chance differences in wording could affect how participants understand the task. |
-| Exclusions | Three missed timed Deliberation responses or incompletion | Same criteria, plus letter attention-check accuracy below 10% or nonresponse rate above 90%, following the original analysis code (although these criteria were not reported for Experiment 1 in the paper) | Unlikely. Unattended participants were also excluded from the original Experiment 2. |
+| Exclusions | Three missed timed Deliberation responses or incompletion | Same criteria. | No change to the original Experiment 1 exclusion criteria. |
 
 ### Methods addendum (post data collection)
 
@@ -448,7 +440,7 @@ bind_rows(
   pivot_wider(names_from = condition, values_from = n, values_fill = 0) |>
   mutate(Total = rowSums(across(-step))) |>
   rename(Step = step) |>
-  knitr::kable(caption = "Participants at each step, by frame. Differences between frames in attrition or exclusion are a threat to validity and should be discussed.")
+  knitr::kable(caption = "Recorded sessions at each stage of Pilot B, grouped by the recorded condition.")
 ```
 
 ```{r}
@@ -456,10 +448,10 @@ bind_rows(
 #| eval: !expr have_data
 #| echo: false
 #| results: asis
-cat(sprintf("Of %d participants who started, %d completed the study and %d met the exclusion criteria.",
+cat(sprintf("Of %d recorded sessions, %d completed the study and %d were retained after exclusions.",
             nrow(participants), nrow(complete), nrow(keep)))
 if (n_no_response > 0) {
-  cat(sprintf(" %d completed session(s) contained no response to any speeded trial and were excluded on that basis.",
+  cat(sprintf(" %d retained session(s) contained no final-choice responses and contributed no observations to the choice models.",
               n_no_response))
 }
 if (nrow(keep) == 0) cat(" No participants remain for analysis yet, so the results below are empty.")
@@ -504,6 +496,70 @@ Any deviation from the preregistered plan above, or "None". Changes made after s
 
 Data preparation follows the analysis plan. Loading and exclusions are done by the shared analysis code under Key statistics (open "Show the analysis code"). Describe anything you did to the data beyond that.
 :::
+
+### Memory performance
+
+```{r}
+#| label: memory-performance
+#| eval: !expr have_data
+#| results: asis
+# Original Experiment 1 analysis Rmd, lines 385-438; paper sections 2.4.1/3.1.
+# Use explicit old/new and response fields. In the original export, memoribility
+# denotes correctness and stimulus_type 100/101 denotes old/new; the source's
+# reversed hit/false-alarm coding gives the same d-prime by normal symmetry.
+# Match its half-trial correction at rates 0 and 1 and two-sided t-test vs zero.
+# Unanswered recognition trials contribute to neither rate denominator. A
+# participant needs at least one answered old and one answered new item for
+# d-prime; this does not change inclusion in the primary choice models.
+score_memory_dprime <- function(d) {
+  items <- d$retained |> filter(task == "item_memory") |>
+    mutate(old = as_bool(is_old), recognized = as_bool(responded_old),
+           answered = !is.na(response) & response %in% c("0", "1") & !as_bool(timed_out))
+  stopifnot(!anyDuplicated(items[c("participant_id", "memory_id")]),
+            all(tolower(as.character(items$is_old)) %in% c("true", "false")),
+            all(items$recognized[items$answered] == (items$response[items$answered] == "1")))
+  rates <- items |> group_by(participant_id) |>
+    summarise(old_presented = sum(old), new_presented = sum(!old),
+      hits = sum(old & answered & recognized),
+      misses = sum(old & answered & !recognized),
+      false_alarms = sum(!old & answered & recognized),
+      correct_rejections = sum(!old & answered & !recognized),
+      unanswered = sum(!answered), .groups = "drop") |>
+    mutate(old_answered = hits + misses, new_answered = false_alarms + correct_rejections,
+      hit_rate = if_else(old_answered > 0L, hits / old_answered, NA_real_),
+      false_alarm_rate = if_else(new_answered > 0L, false_alarms / new_answered, NA_real_))
+  correct_extreme <- function(rate, n) case_when(
+    n <= 0L ~ NA_real_, rate == 0 ~ 1 / (2 * n),
+    rate == 1 ~ 1 - 1 / (2 * n), .default = rate)
+  rates |>
+    mutate(hit_rate_corrected = correct_extreme(hit_rate, old_answered),
+      false_alarm_rate_corrected = correct_extreme(false_alarm_rate, new_answered),
+      d_prime = qnorm(hit_rate_corrected) - qnorm(false_alarm_rate_corrected))
+}
+summarize_memory_dprime <- function(scores) {
+  x <- scores$d_prime[is.finite(scores$d_prime)]
+  test <- if (length(x) >= 2L) tryCatch(
+    stats::t.test(x, mu = 0, alternative = "two.sided", conf.level = 0.95),
+    error = function(e) NULL) else NULL
+  tibble(N = length(x), `Mean d-prime` = if (length(x)) mean(x) else NA_real_,
+    `SD d-prime` = if (length(x) >= 2L) sd(x) else NA_real_,
+    t = if (is.null(test)) NA_real_ else unname(test$statistic),
+    df = if (is.null(test)) NA_real_ else unname(test$parameter),
+    p = if (is.null(test)) NA_real_ else test$p.value,
+    `95% CI lower` = if (is.null(test)) NA_real_ else test$conf.int[1],
+    `95% CI upper` = if (is.null(test)) NA_real_ else test$conf.int[2],
+    Status = if (is.null(test)) "Test not estimable: insufficient observations or variation" else "Estimated")
+}
+recognition_dprime <- score_memory_dprime(phase1)
+knitr::kable(summarize_memory_dprime(recognition_dprime), digits = 3,
+  caption = "Recognition memory sensitivity (d-prime): half-trial correction for extreme hit and false-alarm rates; two-sided one-sample t-test against zero with a 95% confidence interval.")
+knitr::kable(recognition_dprime |>
+  summarise(`Participants with recognition records` = n(),
+    `Participants with estimable d-prime` = sum(is.finite(d_prime)),
+    `Answered old trials` = sum(old_answered), `Answered new trials` = sum(new_answered),
+    `Unanswered recognition trials` = sum(unanswered)),
+  caption = "Recognition-data accounting for the d-prime calculation. Missing recognition responses do not change inclusion in the choice analyses.")
+```
 
 ### Confirmatory analysis
 
@@ -635,18 +691,22 @@ Any follow-up analyses (optional). Label them clearly as exploratory: they were 
 
 ```{r}
 #| label: exploratory-rt
+#| dependson: analysis-functions
 #| eval: !expr have_data
 #| cache: true
-#| cache.extra: !expr list(id = experiment_id, hashes = tools::md5sum(analysis_input_files[file.exists(analysis_input_files)]), rstanarm = as.character(packageVersion("rstanarm")))
+#| cache.extra: !expr list(id = experiment_id, hashes = tools::md5sum(analysis_input_files[file.exists(analysis_input_files)]), rstanarm = as.character(packageVersion("rstanarm")), coin = as.character(packageVersion("coin")))
 #| results: asis
 # Wang et al. (2026), sections 2.4.3–2.4.4; OSF xjhkf,
 # Experiment_1_analysis.Rmd: RT models (1194–1217, 1354–1374), memory
 # scoring (1690–1745, 1913–1920), corrected correlations (2141–2217).
-# No extra source-Rmd supplementary regressions are added here.
+# Agreed Phase 1 scope: RT models, descriptive memory, and memory-choice
+# Spearman/permutation analyses. The recruitment-source comparison is not
+# applicable to this single-source Prolific sample. Additional source-Rmd
+# memory regression models remain outside the Phase 1 replication scope.
 prepare_exploratory_choices <- function(d) {
-  # These models have no initial-preference covariate: a missing rating does
-  # not discard an otherwise usable RT/choice. Participant exclusions persist.
-  d$choices |>
+  # Follow original Experiment 1: start with the same preference-filtered
+  # trials as the primary choice models, then apply RT response checks.
+  d$model_data |>
     filter(pair_type %in% c("chosen", "unchosen"), !timed_out,
            !is.na(p_ns), is.finite(rt), rt > 0) |>
     mutate(pid = factor(participant_id),
@@ -692,54 +752,70 @@ score_exploratory_memory <- function(d) {
     mutate(corrected_memory = if_else(old_trials == 4L & foil_trials == 4L,
                                       raw_memory - false_alarm_rate, NA_real_))
 }
+score_associative_accuracy <- function(d) {
+  # Original Experiment 1 Rmd, lines 368-378: divide correct pair responses
+  # by all four old cues. As in the original grouped summary, participants
+  # without any pairing records do not contribute to this descriptive mean.
+  # This does not alter inclusion in the primary choice analyses.
+  d$retained |> filter(task == "associative_memory") |>
+    group_by(participant_id) |>
+    summarise(pairing_trials = n(), correct_pairings = sum(as_bool(correct)),
+      association_accuracy = correct_pairings / 4, .groups = "drop")
+}
 safe_spearman <- function(x, y) {
-  if (length(x) < 3L || n_distinct(x) < 2L || n_distinct(y) < 2L) return(NA_real_)
+  if (length(x) < 2L || n_distinct(x) < 2L || n_distinct(y) < 2L) return(NA_real_)
   unname(cor(x, y, method = "spearman"))
 }
 spearman_permutation <- function(x, y, B = 10000L, seed = 123L) {
   valid <- is.finite(x) & is.finite(y)
-  x <- x[valid]; y <- y[valid]
-  observed <- safe_spearman(x, y)
-  if (!is.finite(observed)) return(tibble(N = length(x), rho = NA_real_,
+  d <- tibble(corrected_memory_score = x[valid], higher_outcome_chosen = y[valid])
+  observed <- safe_spearman(d$corrected_memory_score, d$higher_outcome_chosen)
+  if (!is.finite(observed)) return(tibble(N = nrow(d), rho = NA_real_,
     `Permutation p (two-sided)` = NA_real_, `Valid permutations` = 0L,
-    Status = "Not estimable: fewer than 3 complete pairs or no variation"))
+    Status = "Not estimable: insufficient complete pairs or no variation"))
   set.seed(seed)
-  # Permuting participant-level outcomes preserves tied ranks. No extra
-  # package is needed for the authors' rank-based Monte Carlo test.
-  null <- replicate(B, safe_spearman(x, sample(y)))
-  tibble(N = length(x), rho = observed,
-    `Permutation p (two-sided)` = (1 + sum(abs(null) >= abs(observed) - 1e-12)) / (B + 1),
-    `Valid permutations` = B, Status = "Exploratory")
+  # Original Experiment 1 Rmd, lines 2161-2180: use coin's implementation.
+  # The explicit seed makes repeated report runs reproducible.
+  test <- coin::spearman_test(corrected_memory_score ~ higher_outcome_chosen,
+    data = d, distribution = coin::approximate(nresample = B))
+  tibble(N = nrow(d), rho = observed,
+    `Permutation p (two-sided)` = as.numeric(coin::pvalue(test)),
+    `Valid permutations` = B, Status = "Exploratory: authors' coin::spearman_test")
 }
 memory_correlation_difference <- function(d, B = 10000L, seed = 123L) {
-  # Reproduce the authors' pooled group-label shuffle (not a within-person
-  # swap test). Each retained participant contributes one row per trial type.
-  wide <- d |> filter(is.finite(corrected_memory), is.finite(adaptive_proportion)) |>
-    select(participant_id, corrected_memory, pair_type, adaptive_proportion) |>
-    pivot_wider(names_from = pair_type, values_from = adaptive_proportion)
-  if (!"chosen" %in% names(wide)) wide$chosen <- NA_real_
-  if (!"unchosen" %in% names(wide)) wide$unchosen <- NA_real_
-  wide <- wide |> filter(is.finite(chosen), is.finite(unchosen))
-  observed <- safe_spearman(wide$corrected_memory, wide$chosen) -
-    safe_spearman(wide$corrected_memory, wide$unchosen)
-  if (!is.finite(observed)) return(tibble(N = nrow(wide),
-    `rho chosen minus unchosen` = NA_real_, `Permutation p (two-sided)` = NA_real_,
-    `Valid permutations` = 0L, Status = "Not estimable: insufficient pairs or no variation"))
-  x <- rep(wide$corrected_memory, 2L)
-  y <- c(wide$chosen, wide$unchosen)
-  group <- rep(c(TRUE, FALSE), each = nrow(wide))
+  # Original Rmd, lines 2182-2217: shuffle pooled trial-type labels over all
+  # available participant-by-type rows, retaining undefined null correlations.
+  pooled <- d |>
+    filter(pair_type %in% c("chosen", "unchosen"),
+           is.finite(corrected_memory), is.finite(adaptive_proportion)) |>
+    mutate(chosen_trial_name = if_else(pair_type == "chosen", "Chosen", "Unchosen"))
+  chosen <- pooled$chosen_trial_name == "Chosen"
+  observed <- safe_spearman(pooled$corrected_memory[chosen], pooled$adaptive_proportion[chosen]) -
+    safe_spearman(pooled$corrected_memory[!chosen], pooled$adaptive_proportion[!chosen])
+  counts <- tibble(N = n_distinct(pooled$participant_id),
+    `N chosen` = sum(chosen), `N unchosen` = sum(!chosen))
+  if (!is.finite(observed)) return(counts |>
+    mutate(`rho chosen minus unchosen` = observed, `Permutation p (two-sided)` = NA_real_,
+      `Valid permutations` = 0L, Status = "Not estimable: insufficient pairs or no variation"))
   set.seed(seed)
-  null <- replicate(B, {
-    shuffled <- sample(group)
-    safe_spearman(x[shuffled], y[shuffled]) - safe_spearman(x[!shuffled], y[!shuffled])
-  })
-  valid <- is.finite(null)
-  tibble(N = nrow(wide), `rho chosen minus unchosen` = observed,
-    `Permutation p (two-sided)` = if (any(valid))
-      (1 + sum(abs(null[valid]) >= abs(observed) - 1e-12)) / (1 + sum(valid)) else NA_real_,
-    `Valid permutations` = sum(valid),
-    Status = if (all(valid)) "Exploratory: authors' pooled-label shuffle" else
-      "Exploratory: undefined permutations omitted; inspect small-sample limitations")
+  null_diffs <- numeric(B)
+  for (i in seq_len(B)) {
+    shuffled_group <- sample(pooled$chosen_trial_name)
+    shuffled_chosen <- shuffled_group == "Chosen"
+    rho_chosen_perm <- safe_spearman(pooled$corrected_memory[shuffled_chosen],
+                                    pooled$adaptive_proportion[shuffled_chosen])
+    rho_unchosen_perm <- safe_spearman(pooled$corrected_memory[!shuffled_chosen],
+                                      pooled$adaptive_proportion[!shuffled_chosen])
+    null_diffs[i] <- rho_chosen_perm - rho_unchosen_perm
+  }
+  # Match the authors' raw tail proportion exactly: no extra correction,
+  # comparison tolerance, or removal of undefined shuffled correlations.
+  p_value <- mean(abs(null_diffs) >= abs(observed))
+  counts |>
+    mutate(`rho chosen minus unchosen` = observed, `Permutation p (two-sided)` = p_value,
+      `Valid permutations` = sum(is.finite(null_diffs)),
+      Status = if (is.finite(p_value)) "Exploratory: authors' pooled-label shuffle" else
+        "Not estimable: undefined shuffled correlations in the authors' test")
 }
 fit_exploratory_rt <- function(x) {
   if (n_distinct(x$pid) < 2L || n_distinct(x$trial_type) < 2L) return(list())
@@ -792,7 +868,7 @@ show_exploratory_table(
   exploratory_choices |> group_by(pair_type) |>
     summarise(N = n_distinct(participant_id), Trials = n(),
       `Mean RT (ms)` = mean(rt), `SD RT (ms)` = sd(rt), .groups = "drop"),
-  "Exploratory final-choice RTs: responded trials with finite, positive RT; no additional trimming.", 1)
+  "Exploratory final-choice RTs: preference-filtered choice trials with finite, positive RT; no additional RT trimming.", 1)
 if (length(exploratory_rt_fits)) {
   exploratory_diagnostics <- exploratory_diagnostic_status(exploratory_rt_fits)
   reportable_models <- exploratory_diagnostics$Model[exploratory_diagnostics$`Estimates reportable`]
@@ -815,17 +891,19 @@ if (length(exploratory_rt_fits)) {
 }
 memory_checks <- phase1$retained |> filter(task == "item_memory") |>
   group_by(participant_id) |> summarise(item_accuracy = mean(as_bool(correct)), .groups = "drop")
-association_checks <- phase1$retained |> filter(task == "associative_memory") |>
-  group_by(participant_id) |> summarise(association_accuracy = mean(as_bool(correct)), .groups = "drop")
+association_checks <- score_associative_accuracy(phase1)
 show_exploratory_table(
   memory_checks |> left_join(association_checks, by = "participant_id") |>
     left_join(exploratory_memory, by = "participant_id") |>
     summarise(N = n(), `Mean item accuracy` = mean(item_accuracy),
-      `Mean conditional association accuracy` = mean(association_accuracy, na.rm = TRUE),
+      `N with associative-memory records` = sum(is.finite(association_accuracy)),
+      `Mean associative accuracy` = if (any(is.finite(association_accuracy)))
+        mean(association_accuracy, na.rm = TRUE) else NA_real_,
+      `SD associative accuracy` = sd(association_accuracy, na.rm = TRUE),
       `N with complete corrected score` = sum(is.finite(corrected_memory)),
       `Mean corrected memory score` = mean(corrected_memory, na.rm = TRUE)),
-  "Memory checks and corrected score. Association accuracy is conditional on recognizing the original chosen cue; the corrected score includes all four old cues, then subtracts the false-alarm rate across four novel items.")
-# Match source aggregation over responded positive-RT trials; the same
+  "Memory checks and corrected score. Per-participant associative accuracy is correct pairing responses divided by four old cues, matching the original code; its mean and SD use participants with pairing records. The separate corrected score includes all four old cues, then subtracts the false-alarm rate across four novel items.")
+# Match source aggregation over preference-filtered positive-RT trials; the same
 # participant memory score is related separately to chosen/unchosen choices.
 memory_choice <- exploratory_choices |> group_by(participant_id, pair_type) |>
   summarise(adaptive_proportion = mean(adaptive), .groups = "drop") |>
@@ -836,9 +914,9 @@ memory_correlations <- map_dfr(c("chosen", "unchosen"), function(type) {
     mutate(`Pair type` = type, .before = 1)
 })
 show_exploratory_table(memory_correlations,
-  "Exploratory corrected-memory versus adaptive-choice Spearman correlations. Two-sided participant-outcome permutation tests: 10,000 shuffles, seed 123, plus-one correction; participants need a complete memory score.")
+  "Exploratory corrected-memory versus adaptive-choice Spearman correlations. Authors' coin::spearman_test with 10,000 approximate resamples, two-sided p-values and seed 123; participants need a complete memory score.")
 show_exploratory_table(memory_correlation_difference(memory_choice),
-  "Exploratory difference in Spearman correlations (chosen minus unchosen), using the authors' pooled trial-type-label shuffle over complete participant pairs: 10,000 permutations, seed 123, two-sided plus-one correction. This reproduces their pooled-label procedure rather than a paired within-participant swap test.")
+  "Exploratory difference in Spearman correlations (chosen minus unchosen), using the authors' pooled trial-type-label shuffle over available participant-by-type rows: 10,000 permutations, seed 123, raw two-sided permutation tail proportion. Undefined shuffled correlations leave the p-value unavailable.")
 ```
 
 ```{r}
@@ -904,7 +982,7 @@ Every change from the Phase 1 experiment, one per row, each tagged with a catego
 :::
 
 | \# | Category | Phase 1 | Phase 2 | Why |
-|---------------|---------------|---------------|---------------|---------------|
+|----|----|----|----|----|
 | 1 | Sample | 27 analysed participants | 300 analysed participants (150 per frame) | Phase 1's interval was too wide to distinguish the original effect from a much smaller one. |
 | 2 | Checks | No comprehension check | After the choice, participants say how many people are at risk (600) | Confirms participants read the scenario; failures are reported, and excluded only if preregistered. |
 | 3 | Exploratory measure | None | At the end: "How confident are you in your choice?" (1–7) | Exploratory only; collected after every confirmatory measure. |
