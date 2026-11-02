@@ -5,7 +5,8 @@
  * DVs: rating; response/choice/rt; chose_paired_reward/chose_inferred_high; memory correct.
  * Trials: 24 ratings; 8 timed practice + 4 untimed decisions; 4 outcomes; 48 choices; 8 memory.
  * Randomization: seeded items, pairs, sides, order; exactly two rewarded chosen anchors.
- * Exclusion flag: three practice nonresponses; no invented attention accuracy cutoff.
+ * Exclusion: a missed practice choice is repeated once; missing the repeat ends the session.
+ * No invented attention accuracy cutoff.
  */
 (function () {
   "use strict";
@@ -30,10 +31,10 @@
     window.__design = design;
     window.__jsPsych = jsPsych;
     const metadata = {
-      design: "within-subjects", paradigm: "wang2026-experiment1", paradigm_version: "1.2.1-pilot-b-final-instructions",
-      instructions_version: "exp1-concise-reviewed-v2",
+      design: "within-subjects", paradigm: "wang2026-experiment1", paradigm_version: "1.3.0-original-repeat-rule",
+      instructions_version: "exp1-concise-reviewed-v3",
       random_seed: seed, stimulus_manifest: design.manifest_version, qa_run: qa, preview_run: preview,
-      practice_miss_limit: 3, source_protocol: "paper-exp1-and-archived-exp1-records",
+      practice_stop_rule: "end_after_missed_repeat", source_protocol: "paper-exp1-and-archived-exp1-records",
     };
     jsPsych.data.addProperties(metadata);
     saver.updateParticipant(metadata);
@@ -85,18 +86,19 @@
       <p>Press <strong>J for the left picture</strong> or <strong>K for the right picture</strong>.
       A green border will show your selection.</p>
       <p>During practice, respond within <strong>5 seconds</strong>. If you miss a response, you will see a warning
-      and move to the next trial. The task will end if you miss <strong>three responses across the two practice rounds</strong>.</p>`, "deliberation"));
+      and the same pair will appear again. The task will end if you <strong>miss the repeated pair</strong>.</p>`, "deliberation"));
 
     function deliberation(pair, round, order) {
       // jsPsych evaluates stimulus functions before on_start; initialize display state now.
       let [left, right] = D.shuffle([pair.a, pair.b], design.random);
       let selected = null, missed = false;
       const task = round === 3 ? "final_deliberation" : "deliberation";
-      const choice = {
+      const choiceTrial = repeat => ({
         type: jsPsychHtmlKeyboardResponse, choices: ["j", "k"],
         trial_duration: round === 3 ? null : responseWindow(5000),
-        stimulus: () => `<div data-screen="deliberation" data-event="delib-${round}-${order}"><p class="phase-label">Deliberation Phase — ${round === 3 ? "Decision Round" : "Practice Round " + round}</p>${sideBySide(left.anchor, right.anchor)}<p>Which picture will be on the more valuable stamp?</p>${keys}</div>`,
-        save_trial_parameters: { stimulus: false }, data: { task, trial_id: task, round, pair_id: pair.id },
+        stimulus: () => `<div data-screen="deliberation" data-event="delib-${round}-${order}${repeat ? "-repeat" : ""}"><p class="phase-label">Deliberation Phase — ${round === 3 ? "Decision Round" : "Practice Round " + round}</p>${sideBySide(left.anchor, right.anchor)}<p>Which picture will be on the more valuable stamp?</p>${keys}</div>`,
+        save_trial_parameters: { stimulus: false },
+        data: { task: repeat ? "repeat_deliberation" : task, trial_id: repeat ? "repeat_deliberation" : task, round, pair_id: pair.id },
         on_start: trial => {
           trial.data = { ...trial.data, left_image: left.anchor, right_image: right.anchor,
             left_category: left.id, right_category: right.id, stimulus_type: pair.id };
@@ -119,20 +121,27 @@
           }
           if (round < 3 && missed) design.practice_misses++;
           data.cumulative_practice_misses = design.practice_misses;
-          if (design.practice_misses >= 3) {
+          // Original Exp 1 records: a missed practice choice is repeated once after a
+          // warning; the session ends only when that repeated choice is also missed.
+          if (repeat && missed) {
             design.terminated = true;
             jsPsych.abortExperiment();
           }
         },
-      };
+      });
       const feedback = { type: jsPsychHtmlKeyboardResponse, choices: "NO_KEYS", trial_duration: duration(500),
         stimulus: () => `<div data-screen="selection">${sideBySide(left.anchor, right.anchor, selected)}${keys}</div>`,
         save_trial_parameters: { stimulus: false }, data: { task: "selection_feedback", phase: task, pair_id: pair.id } };
+      // Wording from the supplied original warning screen (trial_id deliberation_first_warning).
       const warning = { type: jsPsychHtmlKeyboardResponse, choices: "NO_KEYS", trial_duration: duration(3000),
-        stimulus: "<p>You did not respond. Please make your next practice choice within 5 seconds.</p>",
-        data: { task: "missed_response_warning", pair_id: pair.id } };
-      const children = [choice, { timeline: [feedback], conditional_function: () => !missed },
-        { timeline: [warning], conditional_function: () => missed }];
+        stimulus: "<p>You did not respond to the previous trial!<br>Please respond to this trial!</p>",
+        data: { task: "missed_response_warning", trial_id: "deliberation_first_warning", pair_id: pair.id },
+        // The repeated pair is shown with sides re-randomized, as in the original code.
+        on_finish: () => { [left, right] = D.shuffle([pair.a, pair.b], design.random); } };
+      // Decision Round choices are untimed, so only practice rounds can need a repeat.
+      const children = [choiceTrial(false)];
+      if (round < 3) children.push({ timeline: [warning, choiceTrial(true)], conditional_function: () => missed });
+      children.push({ timeline: [feedback], conditional_function: () => !missed });
       if (round === 2) children.push({
         timeline: [{ type: jsPsychSurveyText,
           questions: [{ prompt: "Why did you choose that picture?", name: "reason", rows: 3, required: true }],
@@ -234,7 +243,9 @@
         stimulus: () => sideBySide(item.left.image, item.right.image, selected),
         save_trial_parameters: { stimulus: false }, data: { task: "selection_feedback", phase: "final_choice" },
       }, {
-        timeline: [{ type: jsPsychHtmlKeyboardResponse, choices: "ALL_KEYS",
+        // Original Exp 1 records contain timed-out letter checks (answered RTs up to 14.9 s),
+        // so Exp 1 had a limit; 15 s is inferred. The supplied Exp 2 code is untimed.
+        timeline: [{ type: jsPsychHtmlKeyboardResponse, choices: "ALL_KEYS", trial_duration: responseWindow(15000),
           stimulus: () => `<div data-screen="attention" data-event="attention-${i}" class="attention-letter">${letter.toUpperCase()}</div>`,
           save_trial_parameters: { stimulus: false }, data: { task: "attention_check", trial_id: "attention_checker", after_choice: i + 1 },
           on_finish: data => { data.letter = letter; data.correct = data.response !== null && data.response.toLowerCase() === letter; },

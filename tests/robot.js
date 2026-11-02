@@ -5,6 +5,8 @@ const path = require("node:path");
 async function runThroughExperiment(page, options = {}) {
   const seen = new Set();
   let timedOut = false;
+  let missedPractice = false;
+  let missedAttention = false;
   let wrongAttention = false;
   let wrongAssociation = false;
   let falseAlarm = false;
@@ -40,13 +42,19 @@ async function runThroughExperiment(page, options = {}) {
       await page.keyboard.press("ArrowRight");
       await page.getByRole("button", { name: "Continue", exact: true }).click();
     } else if (kind === "deliberation" || kind === "final-choice") {
-      if (options.exerciseErrors && kind === "final-choice" && !timedOut) {
-        timedOut = true;
+      // Miss one Practice Round 2 choice so the warning, repeat and rationale path runs.
+      const missPractice = options.exerciseErrors && !missedPractice && task === "deliberation" && event.startsWith("delib-2-");
+      if (missPractice || (options.exerciseErrors && kind === "final-choice" && !timedOut)) {
+        if (missPractice) missedPractice = true; else timedOut = true;
         await page.waitForFunction(e => !document.querySelector(`[data-event="${e}"]`), event);
       } else {
         await page.keyboard.press(kind === "deliberation" ? "j" : "k");
         await page.waitForFunction(e => !document.querySelector(`[data-event="${e}"]`), event);
       }
+    } else if (kind === "attention" && options.exerciseErrors && !missedAttention) {
+      // Let the first letter check time out; later checks exercise a wrong key press.
+      missedAttention = true;
+      await page.waitForFunction(e => !document.querySelector(`[data-event="${e}"]`), event);
     } else if (kind === "attention") {
       const letter = (await screen.textContent()).trim().toLowerCase();
       const key = options.exerciseErrors && !wrongAttention ? (letter === "a" ? "b" : "a") : letter;

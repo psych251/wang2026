@@ -54,9 +54,9 @@ test_import_and_retention <- function() {
   dir.create(export_dir, recursive = TRUE)
   dir.create(file.path(fixture, "writeup"))
   ids <- c("accuracy_boundary", "accuracy_below", "nonresponse_boundary",
-           "nonresponse_above", "zero_checks", "incomplete", "three_misses", "qa", "preview")
+           "nonresponse_above", "zero_checks", "incomplete", "answered_repeats", "qa", "preview")
   participants <- tibble(participant_id = ids,
-    completed = ids != "incomplete", practice_misses = if_else(ids == "three_misses", 3L, 0L),
+    completed = ids != "incomplete", practice_misses = if_else(ids == "answered_repeats", 3L, 0L),
     qa_run = ids == "qa", preview_run = ids == "preview")
   scientific_rows <- bind_rows(lapply(ids, function(id) bind_rows(
     tibble(participant_id = id, task = "preference_rating", category = c("a", "b"),
@@ -69,12 +69,13 @@ test_import_and_retention <- function() {
   write_csv(bind_rows(scientific_rows, attention_rows), file.path(export_dir, "trials.csv"), na = "")
   setwd(file.path(fixture, "writeup"))
   phase <- read_phase("synthetic")
+  # Missed practice choices answered on their repeat do not exclude (original Exp 1).
   expected <- c("accuracy_boundary", "accuracy_below", "nonresponse_boundary",
-                "nonresponse_above", "zero_checks")
+                "nonresponse_above", "zero_checks", "answered_repeats")
   stopifnot(setequal(phase$keep$participant_id, expected),
     setequal(unique(phase$retained$participant_id), expected),
     setequal(unique(as.character(phase$model_data$pid)), expected),
-    nrow(phase$model_data) == 10L)
+    nrow(phase$model_data) == 12L)
   low_attention <- phase$keep |> filter(attention_accuracy < 0.10 | attention_nonresponse_rate > 0.90)
   stopifnot(setequal(low_attention$participant_id, c("accuracy_below", "nonresponse_above")))
   zero <- filter(phase$participants, participant_id == "zero_checks")
@@ -84,15 +85,15 @@ test_import_and_retention <- function() {
   # No attention-check rows in an export, including no letter/response columns.
   write_csv(scientific_rows, file.path(export_dir, "trials.csv"), na = "")
   no_checks <- read_phase("synthetic")
-  stopifnot(nrow(no_checks$keep) == 5L,
+  stopifnot(nrow(no_checks$keep) == 6L,
     all(no_checks$keep$n_attention_checks == 0L),
     all(is.na(no_checks$keep$attention_accuracy)))
-  write_csv(mutate(participants, practice_misses = 3L),
+  write_csv(mutate(participants, completed = FALSE),
             file.path(export_dir, "participants.csv"), na = "")
   all_excluded <- read_phase("synthetic")
   stopifnot(nrow(all_excluded$keep) == 0L, nrow(all_excluded$retained) == 0L,
             nrow(all_excluded$model_data) == 0L,
             is.null(read_phase("not-collected")))
-  cat("PASS: low-attention participants retained; incompletion, practice, QA and preview exclusions preserved; zero-check, empty and no-data exports\n")
+  cat("PASS: low-attention participants retained; answered practice repeats retained; incompletion (including a missed repeat), QA and preview exclusions preserved; zero-check, empty and no-data exports\n")
 }
 test_import_and_retention()

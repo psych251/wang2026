@@ -48,12 +48,18 @@ test("complete experiment saves every required measure and exercises timeout and
   expect(outcomeInstructions.stimulus).toContain("Decision Round of the Deliberation Phase");
   expect(outcomeInstructions.stimulus).toContain("Board of Evaluation");
   expect(select("instructions").find(t => t.phase === "memory").stimulus).toContain("bonus memory test");
-  expect(trials.every(t => t.instructions_version === "exp1-concise-reviewed-v2")).toBe(true);
+  expect(trials.every(t => t.instructions_version === "exp1-concise-reviewed-v3")).toBe(true);
   expect(trials[0].task).toBe("consent");
   expect(trials.at(-1).task).toBe("debrief");
   expect(select("preference_rating")).toHaveLength(24);
   expect(select("preference_rating").every(t => Number.isFinite(t.rating))).toBe(true);
   expect(select("deliberation")).toHaveLength(8);
+  // One missed Practice Round 2 choice: warning, then the same pair once more, answered.
+  expect(select("deliberation").filter(t => t.timed_out)).toHaveLength(1);
+  const missedPair = select("deliberation").find(t => t.timed_out).pair_id;
+  expect(select("missed_response_warning").map(t => t.pair_id)).toEqual([missedPair]);
+  expect(select("repeat_deliberation")).toHaveLength(1);
+  expect(select("repeat_deliberation")[0]).toMatchObject({ pair_id: missedPair, round: 2, timed_out: false });
   expect(select("choice_rationale")).toHaveLength(4);
   expect(select("final_deliberation")).toHaveLength(4);
   expect(select("outcome_learning")).toHaveLength(4);
@@ -72,6 +78,7 @@ test("complete experiment saves every required measure and exercises timeout and
   expect(select("associative_memory")).toHaveLength(4);
   expect(select("associative_memory").filter(t => !t.correct)).toHaveLength(1);
   expect(select("attention_check").some(t => !t.correct)).toBe(true);
+  expect(select("attention_check")[0]).toMatchObject({ response: null, correct: false });
   expect(select("reward_judgment")).toHaveLength(0);
   expect(select("recognition_trial")).toHaveLength(0);
   const docId = await page.evaluate(() => window.__saver.docId);
@@ -123,7 +130,7 @@ test("declining consent records no task responses and does not complete the stud
   }
 });
 
-test("three practice timeouts end the session and mark it incomplete", async ({ page }) => {
+test("missing a practice choice and its repeat ends the session and marks it incomplete", async ({ page }) => {
   await page.goto(query());
   await page.getByRole("button", { name: "I agree to participate" }).click();
   while (!(await page.locator('[data-screen="deliberation"]').isVisible())) {
@@ -138,18 +145,22 @@ test("three practice timeouts end the session and mark it incomplete", async ({ 
   }
   await expect(page.getByText("Task ended", { exact: true })).toBeVisible({ timeout: 12000 });
   const rows = await page.evaluate(() => window.__jsPsych.data.get().values());
-  expect(rows.filter(t => t.task === "deliberation" && t.timed_out)).toHaveLength(3);
+  expect(rows.filter(t => t.task === "deliberation" && t.timed_out)).toHaveLength(1);
+  expect(rows.filter(t => t.task === "missed_response_warning")).toHaveLength(1);
+  expect(rows.filter(t => t.task === "repeat_deliberation" && t.timed_out)).toHaveLength(1);
+  expect(rows.filter(t => t.task === "repeat_deliberation")[0].pair_id)
+    .toBe(rows.find(t => t.task === "deliberation" && t.timed_out).pair_id);
   expect(rows.filter(t => t.task === "outcome_learning")).toHaveLength(0);
   if (EMULATOR) {
     const docId = await page.evaluate(() => window.__saver.docId);
     const p = await getDoc(`experiments/${ID}/participants/${docId}`);
     expect(p.completed).toBe(false);
-    expect(p.termination_reason).toBe("three_missed_practice_responses");
+    expect(p.termination_reason).toBe("missed_repeated_practice_response");
   }
 });
 
 test("missing image prevents entry into the task", async ({ page }) => {
-  await page.route("**/stimuli/shrimp_exemplar1.jpg", route => route.fulfill({ status: 404, body: "missing" }));
+  await page.route("**/stimuli/starfish_exemplar1.jpg", route => route.fulfill({ status: 404, body: "missing" }));
   await page.goto(query());
   await page.getByRole("button", { name: "I agree to participate" }).click();
   await expect(page.getByText("Images could not be loaded")).toBeVisible();
@@ -161,18 +172,22 @@ test("production settings retain original response windows and outcome delay", a
   await page.goto("/?preview=1");
   await page.getByRole("button", { name: "I agree to participate" }).click();
   await page.waitForFunction(() => window.__jsPsych && window.__design);
-  expect(await page.evaluate(() => EXPERIMENT.id)).toBe("wang2026-exp1-pilot-b");
+  expect(await page.evaluate(() => EXPERIMENT.id)).toBe("wang2026-exp1-main");
   const data = await page.evaluate(() => {
     const timeline = window.__jsPsych.getTimeline();
     const flattened = [];
     function walk(nodes) { for (const n of nodes) { if (n.timeline) walk(n.timeline); else flattened.push(n); } }
     walk(timeline);
-    return flattened.filter(t => ["deliberation", "final_deliberation", "final_choice", "outcome_learning"].includes(t.data && t.data.task))
+    return flattened.filter(t => ["deliberation", "repeat_deliberation", "final_deliberation", "final_choice", "attention_check", "outcome_learning"].includes(t.data && t.data.task))
       .map(t => ({ task: t.data.task, duration: t.trial_duration }));
   });
   expect(data.filter(t => t.task === "deliberation").every(t => t.duration === 5000)).toBe(true);
+  expect(data.filter(t => t.task === "repeat_deliberation")).toHaveLength(8);
+  expect(data.filter(t => t.task === "repeat_deliberation").every(t => t.duration === 5000)).toBe(true);
   expect(data.filter(t => t.task === "final_deliberation").every(t => t.duration === null)).toBe(true);
   expect(data.filter(t => t.task === "final_choice").every(t => t.duration === 7000)).toBe(true);
+  expect(data.filter(t => t.task === "attention_check")).toHaveLength(48);
+  expect(data.filter(t => t.task === "attention_check").every(t => t.duration === 15000)).toBe(true);
   expect(data.filter(t => t.task === "outcome_learning").every(t => t.duration === 3000)).toBe(true);
 });
 

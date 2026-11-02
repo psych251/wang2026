@@ -57,13 +57,14 @@ test("random designs preserve phase separation, exact reward balance, and counte
   }
 });
 
-test("student-approved shrimp correction is applied and all image bytes match manifest hashes", () => {
+test("student-approved cinnamon-bun removal is applied and all image bytes match manifest hashes", () => {
   const fs = require("node:fs");
   const crypto = require("node:crypto");
   const path = require("node:path");
   const sea = manifest.categories.find(c => c.id === "sea");
-  assert.ok(sea.files.includes("shrimp_exemplar1.jpg"));
+  assert.equal(sea.files.length, 15);
   assert.ok(!sea.files.includes("cinnamon_bun_exemplar1.jpg"));
+  assert.ok(!sea.files.includes("shrimp_exemplar1.jpg"));
   for (const [filename, hash] of Object.entries(manifest.sha256)) {
     const bytes = fs.readFileSync(path.join(__dirname, "..", "stimuli", filename));
     assert.equal(crypto.createHash("sha256").update(bytes).digest("hex"), hash);

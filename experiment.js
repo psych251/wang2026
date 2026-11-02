@@ -3,7 +3,8 @@
  * DVs: preference ratings, choice/RT, old/new recognition, associative memory.
  * Trials: 24 ratings; 12 deliberations; 4 outcomes; 48 choices; 8 item-memory trials.
  * Seeded randomization of images, pairings, sides, order, and two rewarded chosen anchors.
- * Stop rule: three missed practice decisions. Details in src/task.js and src/design.js.
+ * Stop rule: a missed practice decision is repeated once; missing the repeat ends the session.
+ * Details in src/task.js and src/design.js.
  */
 // ---------------------------------------------------------------------------
 // Settings
@@ -13,7 +14,7 @@ window.TEMPLATE_VERSION = "0.1.0";
 const EXPERIMENT = {
   // Firestore path: experiments/<id>/participants/... Change it when you start a new study
   // so pilot data and real data never mix (e.g. "smith2016-pilot-a", "smith2016-final").
-  id: "wang2026-exp1-pilot-b",
+  id: "wang2026-exp1-main",
 
   // Trials per Firestore write. 1 = save every trial the moment it finishes (dropouts leave
   // partial data). The free tier allows 20,000 writes/day: with 200 participants x 100 trials
@@ -102,7 +103,7 @@ if (USE_EMULATOR && URL_PARAMS.get("cc")) EXPERIMENT.prolific_completion_code = 
       // finish() flushes remaining trials, marks the participant complete, and (only if
       // saving failed) appends a download-fallback box to the display element.
       const debriefed = jsPsych.data.get().filter({ task: "debrief" }).count() === 1;
-      const reason = window.__design && window.__design.terminated ? "three_missed_practice_responses" : debriefed ? null : "declined_consent";
+      const reason = window.__design && window.__design.terminated ? "missed_repeated_practice_response" : debriefed ? null : "declined_consent";
       const result = await saver.finish(jsPsych, { completed: debriefed, termination_reason: reason });
       const consentRow = jsPsych.data.get().filter({ task: "consent" }).values()[0];
       const consented = !consentRow || consentRow.consented !== false;
@@ -114,7 +115,7 @@ if (USE_EMULATOR && URL_PARAMS.get("cc")) EXPERIMENT.prolific_completion_code = 
         return;
       }
       if (window.__design && window.__design.terminated) {
-        msg.innerHTML = "<h2 class='thanks'>Task ended</h2><p>Three practice responses were missed, so the task has ended. You may close this window.</p>";
+        msg.innerHTML = "<h2 class='thanks'>Task ended</h2><p>A repeated practice response was missed, so the task has ended. You may close this window.</p>";
         return;
       }
       if (result.ok && EXPERIMENT.prolific_completion_code && !USE_EMULATOR && !OFFLINE_PREVIEW) {

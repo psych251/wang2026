@@ -94,12 +94,13 @@ original_d <- abs(original_summary$unchosen_cohens_d)
 # AI use statement
 
 | Tool and model | What it was used for | How you checked the output |
-|----|----|----|
+|------------------------|------------------------|------------------------|
 | ChatGPT (GPT-6.1 Sol) | Implementing the experimental paradigm | Compared the implementation against the original experiment code and tested with pilots to verify the task procedure and recorded data. |
 | ChatGPT (GPT-6.1 Sol) | Conducting the power analysis | Compared the code with the power analysis code for Experiment 2 of the original study. |
 | ChatGPT (GPT-6.1 Sol) | Preprocessing data and implementing analysis code, tables and figures | Tested preprocessing and scoring using synthetic data and Pilot B exports. Further assessment of model stability requires a larger sample. |
 | ChatGPT (GPT-6.1 Sol) | Checking consistency with the original analyses and documenting implementation differences | Compared the implemented analyses with the original Experiment 1 analysis code and reviewed the remaining differences. |
 | ChatGPT (GPT-6.1 Sol) | Fixing unknown completion code issue on Prolific | Confirmed the completion status was updated correctly for each participant. |
+| Claude Code (Opus 5.5) | Checking discrepancy among the original paper, code and data | Compared each difference and made decisions for the replication. |
 
 I wrote all of the text in this report myself. AI tools were not used to write, rewrite or paraphrase it, and were not used to generate, alter, or impute any participant data. I take full responsibility for the content of this report, including any errors introduced by AI tools.
 
@@ -157,9 +158,10 @@ read_phase <- function(id) {
                   ~ coalesce(.x, 0L)))
   complete <- participants |> filter(completed)
   # Completed export flag replaces the original platform's nonempty unique_code.
-  # Keep the original stopping criterion; no memory-accuracy cutoff is added.
-  keep <- complete |> filter(!as_bool(qa_run), !as_bool(preview_run),
-                             coalesce(practice_misses, 0) < 3)
+  # As in the original, a missed repeated practice choice ends the session, so
+  # completion carries the practice exclusion; answered repeats do not exclude.
+  # No memory-accuracy cutoff is added.
+  keep <- complete |> filter(!as_bool(qa_run), !as_bool(preview_run))
   retained <- trials |> filter(participant_id %in% keep$participant_id)
   ratings <- retained |> filter(task == "preference_rating") |>
     mutate(rt = as.numeric(rt), rating = as.numeric(rating)) |>
@@ -304,7 +306,7 @@ key_rows |> knitr::kable(caption = "Unchosen-category model intercept: odds of c
 
 I’m interested in how memory and decision-making interact to support adaptive behavior, including how information from past experiences can guide decisions in novel situations. Wang et al. (2026) found that value inferred for an unchosen option generalized to novel objects within the same semantic category. I would like to specifically replicate the finding that participants preferred novel items that were semantically similar to an unchosen option whose chosen counterpart received no reward over novel items related to an unchosen option whose chosen counterpart was rewarded, because it suggested how we generalize value beyond direct experience to make adaptive decisions.
 
-The original study used 128 object images, with 16 from each of eight semantic categories in the DinoLab Object Database. Participants were asked to repeatedly choose one item from each pair that they predicted would be more valuable and justify their decisions during deliberation phase. They then learned whether the chosen items received a reward or no reward during outcome learning phase. In the final decision phase, they chose between novel exemplars from all categories to test whether previously learned and inferred value of unchosen options generalized to novel objects from the same semantic categories. A surprise memory test of item and associative memory was conducted to understand the relationship between memory for original associations and novel decisions.
+The original study reported using 128 object images, with 16 from each of eight semantic categories in the DinoLab Object Database. Participants were asked to repeatedly choose one item from each pair that they predicted would be more valuable and justify their decisions during deliberation phase. They then learned whether the chosen items received a reward or no reward during outcome learning phase. In the final decision phase, they chose between novel exemplars from all categories to test whether previously learned and inferred value of unchosen options generalized to novel objects from the same semantic categories. A surprise memory test of item and associative memory was conducted to understand the relationship between memory for original associations and novel decisions.
 
 The key statistical test was a multilevel Bayesian logistic regression testing whether participants’ selection of novel items depended on whether the corresponding previously seen unchosen item had been paired with a chosen item that received a reward or no reward.
 
@@ -335,7 +337,7 @@ For comparison, 2.5 times the original sample would be 308 (rounded up from 307.
 
 ### Planned sample
 
-The experiment will recruit U.S. residents aged 18-35 who are fluent in English through Prolific. Participants must complete the experiment on a computer with a keyboard. Those who fail to respond on three timed practice trials or do not complete the experiment will be excluded. Data collection will continue until 118 participants pass the exclusion criteria, providing approximately 80% power.
+The experiment will recruit U.S. residents aged 18-35 who are fluent in English through Prolific. Participants must complete the experiment on a computer with a keyboard. Participants who fail to respond to both the initial and repeated presentation of a timed practice choice, or who do not complete the experiment, will be excluded. Data collection will continue until 118 participants pass the exclusion criteria, providing approximately 80% power.
 
 ### Materials
 
@@ -345,7 +347,7 @@ Wang et al. (2026) described the stimuli as follows:
 
 > “128 images of common objects from 8 semantic categories (16 objects per category): land mammals, ocean creatures, vegetables, fruits, sports, vehicles, musical instruments, and buildings.” (p. 2, §2.2).
 
-The replication uses the same set of stimuli downloaded from the DinoLab Object Database, with one substitution: an image of a cinnamon bun was replaced with an image of a shrimp in the ocean creatures category.
+The original Experiment 1 data, however, contain 15 fruit images, 17 sports images, and 16 images in each of the other six categories, for a total of 128 images. The replication uses the same stimuli from the DinoLab Object Database, with one exception: an image of a cinnamon bun that was incorrectly categorized as an ocean creature was removed. The replication stimuli set has 15 fruit images, 15 ocean creatures images, 17 sports images and 16 images in each of the other five categories, for a total of 127 images. Although the resulting differences in category pool sizes slightly affect the probability of each image being randomly selected, each category still contributes the same number of images to the design. No new images were added, so all stimuli used in the replication were what participants saw in the original experiment.
 
 [Stimulus files](https://github.com/psych251/wang2026/tree/main/stimuli)
 
@@ -355,11 +357,11 @@ The replication uses the same set of stimuli downloaded from the DinoLab Object 
 
 2.  Pre-experimental phase: Participants rate 24 randomized pictures (three from each of eight categories) “based on their personal preferences” using a slide bar on a 0-100 scale.
 
-3.  Deliberation phase: Participants “choose the images they predicted would be placed on the most valuable stamp” across four pairs repeated in two practice rounds and one final round (12 choices in total). Participants press J to choose the left option and K to choose the right option. Practice choices are timed (5s), while final choices are untimed. The second practice round requires written justifications for their choices. Three missed practice responses terminate the session.
+3.  Deliberation phase: Participants “choose the images they predicted would be placed on the most valuable stamp” across four pairs repeated in two practice rounds and one final round (12 choices in total). Participants press J to choose the left option and K to choose the right option. Practice choices are timed (5s), while final choices are untimed. The second practice round requires written justifications for their choices.
 
 4.  Choice Outcome phase: Four chosen pictures receive randomly assigned outcomes (two rewarded, two unrewarded), with pictures shown alone for 1 s followed by “reward or no reward” for 2 s with pictures. Unchosen pictures receive no feedback.
 
-5.  Final Decision phase: Participants make 48 choices (24 chosen-category and 24 unchosen-category pairs) using six new pictures per category, each presented twice. Participants need to press keys shown on the screen to pass occasional attention checks.
+5.  Final Decision phase: Participants make 48 timed (7s) choices (24 chosen-category and 24 unchosen-category pairs) using six new pictures per category, each presented twice. Participants need to press keys shown on the screen to pass occasional attention checks.
 
 6.  Surprise Memory phase: Participants respond to eight old/new recognition trials (four chosen and four unseen pictures; 1 = old, 0 = new). When an original picture is correctly recognized, participants need to choose its paired partner from four options.
 
@@ -375,16 +377,21 @@ Participants are expected to finish the entire experiment in 10-20 minutes.
 
 **Secondary confirmatory and exploratory analyses.** Secondary confirmatory analyses will use multilevel Bayesian logistic regressions for chosen-category decisions and for chosen- and unchosen-category decisions combined. Exploratory follow-up analyses may include the original study’s Bayesian multilevel analyses of RT and adaptive choice, descriptive memory summaries, and memory–choice analyses using Spearman correlations and permutation tests.
 
-**Exclusions.** Participants are excluded if they fail to respond on three timed practice trials or do not complete the study.
+**Exclusions.** Participants are excluded if they fail to respond on both the initial and repeated presentation of any timed practice trial or do not complete the study.
 
 ### Differences from the original study
 
 | Aspect | Original study | This replication | Expected to matter? |
-|----|----|----|----|
+|------------------|------------------|------------------|------------------|
 | Sample | University of Chicago SONA and MTurk/CloudResearch | Prolific | Unlikely. Participants will be recruited using the same eligibility criteria. |
-| Stimuli | Ocean creatures category includes a cinnamon bun | Replaced the cinnamon bun with a shrimp | Unlikely. The replacement better matches the intended semantic category. |
-| Instructions | Long paragraphs in the original SVG instructions | Reconstructed shorter phase-specific instructions for better clarity, with typos corrected | Unlikely though there is a chance differences in wording could affect how participants understand the task. |
-| Exclusions | Three missed timed Deliberation responses or incompletion | Same criteria. | No change to the original Experiment 1 exclusion criteria. |
+| Exclusion | The paper reports termination after three missed practice trials, while the original code and data show a different stopping rule. | Following the original code and data, a missed practice choice triggers a 3-s warning and one repeat of the same pair. If the repeated choice is also missed, the session ends. | Unlikely. It follows the actual procedure so it should have a comparable exclusion rate to the original's. |
+| Stimuli | Ocean creatures category includes a cinnamon bun. | Removed the cinnamon bun. | Unlikely. The removal ensures that all stimuli better match their intended semantic categories. |
+| Paradigm | The paper reports a 5-s response window for practice trials, while the original data suggest a 7-s window. | Used the 5-s window described in the paper. | Unlikely, although the shorter window may result in more missed responses. |
+| Paradigm | The code includes untimed attention checks, while the original data suggest a 15-s response window. | Added a 15-s response window for attention checks. | Unlikely. Attention-check performance is recorded for descriptive purposes and does not affect participant exclusion. |
+| Paradigm | The paper describes using two lure items from different categories in the memory test while the data show two items from the same category. | Used two lure images from the same novel category, following the original data. | Unlikely. This follows the procedure reflected in the original data. |
+| Instructions | Long paragraphs in the original SVG instructions. | Reconstructed shorter phase-specific instructions for better clarity and corrected typos. | Unlikely, although differences in wording could affect participants' understanding of the task. |
+| Data | Missed choices were coded as selections of the right-side image. | Excluded missed choices from the choice models to reduce noise. | Unlikely. Only 30 of 5,892 trials (0.5%) were missed in the original model data. |
+| Analysis | The code uses the absolute rating difference, while the paper describes a signed difference. | Used the absolute difference, consistent with the original code. | Unlikely. The published estimates were based on the absolute difference. |
 
 ### Methods addendum (post data collection)
 
@@ -982,7 +989,7 @@ Every change from the Phase 1 experiment, one per row, each tagged with a catego
 :::
 
 | \# | Category | Phase 1 | Phase 2 | Why |
-|----|----|----|----|----|
+|---------------|---------------|---------------|---------------|---------------|
 | 1 | Sample | 27 analysed participants | 300 analysed participants (150 per frame) | Phase 1's interval was too wide to distinguish the original effect from a much smaller one. |
 | 2 | Checks | No comprehension check | After the choice, participants say how many people are at risk (600) | Confirms participants read the scenario; failures are reported, and excluded only if preregistered. |
 | 3 | Exploratory measure | None | At the end: "How confident are you in your choice?" (1–7) | Exploratory only; collected after every confirmatory measure. |
