@@ -52,7 +52,7 @@ library(rstanarm)
 library(coda)
 library(pwr)
 options(mc.cores = min(4L, parallel::detectCores()))
-experiment_id <- Sys.getenv("PSYCH251_PHASE1_ID", "wang2026-exp1-pilot-a")
+experiment_id <- Sys.getenv("PSYCH251_PHASE1_ID", "wang2026-exp1-pilot-b")
 experiment_id_phase2 <- Sys.getenv("PSYCH251_PHASE2_ID", "wang2026-phase2")
 analysis_input_files <- unlist(lapply(c(experiment_id, experiment_id_phase2), function(id)
   file.path("..", "data", "raw", id, c("participants.csv", "trials.csv", "errors.csv"))))
@@ -97,6 +97,7 @@ original_d <- abs(original_summary$unchosen_cohens_d)
 | ChatGPT (GPT-6.1 Sol) | Implementing the experimental paradigm | Compared the implementation against the original experiment code and tested with pilots to verify the task procedure and recorded data. |
 | ChatGPT (GPT-6.1 Sol) | Conducting the power analysis | Compared the code with the power analysis code for Experiment 2 of the original study. |
 | ChatGPT (GPT-6.1 Sol) | Preprocessing data and implementing analysis code, tables and figures | Need to be further checked with more datapoints. |
+| ChatGPT (GPT-6.1 Sol) | Fixing unknown completion code issue on Prolific | Confirmed the completion status was updated correctly for each participant. |
 
 I wrote all of the text in this report myself. AI tools were not used to write, rewrite or paraphrase it, and were not used to generate, alter, or impute any participant data. I take full responsibility for the content of this report, including any errors introduced by AI tools.
 
@@ -119,6 +120,27 @@ One row per study for the key comparison: the original, your Phase 1 replication
 # means rounded to 2 decimals, and absolute separately z-scored left/right
 # means, is reproduced. This differs from the paper's signed-difference prose.
 as_bool <- function(x) tolower(as.character(x)) %in% "true"
+score_attention_checks <- function(trials) {
+  attention <- trials |> filter(task == "attention_check")
+  if (!nrow(attention)) return(tibble(
+    participant_id = character(), n_attention_checks = integer(),
+    n_attention_correct = integer(), n_attention_nonresponses = integer(),
+    attention_accuracy = double(), attention_nonresponse_rate = double(),
+    exclude_attention_accuracy = logical(), exclude_attention_nonresponses = logical()))
+  attention |>
+    mutate(attention_nonresponse = is.na(response) | response == "" |
+             tolower(response) == "null",
+           attention_correct = !attention_nonresponse & !is.na(letter) &
+             tolower(response) == tolower(letter)) |>
+    group_by(participant_id) |>
+    summarise(n_attention_checks = n(),
+              n_attention_correct = sum(attention_correct),
+              n_attention_nonresponses = sum(attention_nonresponse), .groups = "drop") |>
+    mutate(attention_accuracy = n_attention_correct / n_attention_checks,
+           attention_nonresponse_rate = n_attention_nonresponses / n_attention_checks,
+           exclude_attention_accuracy = attention_accuracy < 0.10,
+           exclude_attention_nonresponses = attention_nonresponse_rate > 0.90)
+}
 read_phase <- function(id) {
   dir <- file.path("..", "data", "raw", id)
   if (!all(file.exists(file.path(dir, c("participants.csv", "trials.csv"))))) return(NULL)
@@ -128,12 +150,24 @@ read_phase <- function(id) {
     mutate(completed = as_bool(completed), practice_misses = as.numeric(practice_misses))
   trials <- read_export("trials.csv")
   errors <- if (file.exists(file.path(dir, "errors.csv"))) read_export("errors.csv") else tibble()
+  # Decision fixed on 2026-10-27 while Pilot B was underway, before full-sample
+  # collection. Exp1 paper: three missed practice responses. Exp1 source code
+  # counts <10% attention accuracy / >90% nonresponses without removing them;
+  # Exp2 source code applies those thresholds. This replication applies them.
+  # Denominators include ALL presented letter checks; misses are incorrect.
+  # A participant with no presented checks is not excluded on attention grounds.
+  attention <- score_attention_checks(trials)
+  participants <- participants |> left_join(attention, by = "participant_id") |>
+    mutate(across(c(n_attention_checks, n_attention_correct, n_attention_nonresponses),
+                  ~ coalesce(.x, 0L)),
+           across(c(exclude_attention_accuracy, exclude_attention_nonresponses),
+                  ~ coalesce(.x, FALSE)))
   complete <- participants |> filter(completed)
   # Completed export flag replaces the original platform's nonempty unique_code.
-  # The Exp1 stopping criterion is three missed practice responses. No new
-  # memory/attention-accuracy exclusion threshold is introduced.
+  # Keep the original stopping criterion; no memory-accuracy cutoff is added.
   keep <- complete |> filter(!as_bool(qa_run), !as_bool(preview_run),
-                             coalesce(practice_misses, 0) < 3)
+                             coalesce(practice_misses, 0) < 3,
+                             !exclude_attention_accuracy, !exclude_attention_nonresponses)
   retained <- trials |> filter(participant_id %in% keep$participant_id)
   ratings <- retained |> filter(task == "preference_rating") |>
     mutate(rt = as.numeric(rt), rating = as.numeric(rating)) |>
@@ -153,10 +187,10 @@ read_phase <- function(id) {
                                                as.numeric(scale(Right_mean_ratings)))) |>
     ungroup()
   # A missed choice is missing, never silently interpreted as a right choice.
-  # All three current pilot runs have zero choice timeouts.
+  # Missing final-choice responses are excluded consistently across exports.
   model_data <- choices |> filter(!is.na(p_ns), is.finite(z_score_norm_drate_by_outcome)) |>
     mutate(pid = factor(participant_id))
-  list(participants = participants, trials = trials, errors = errors,
+  list(participants = participants, trials = trials, errors = errors, attention = attention,
     complete = complete, keep = keep, retained = retained, choices = choices,
     model_data = model_data,
     n_no_response = sum(vapply(split(choices$timed_out, choices$participant_id), all, logical(1))))
@@ -246,28 +280,41 @@ format_hpdi <- function(lower, upper) ifelse(is.na(lower) | is.na(upper), "Not a
 ```{r}
 #| label: key-stats
 #| echo: false
-key_rows <- bind_rows(original |> mutate(Study = "Original: Exp1"),
-  phase1_estimates |> mutate(Study = "Phase 1: Pilot A"),
-  if (nrow(phase2_estimates)) phase2_estimates |> mutate(Study = "Phase 2") else
-    tibble(Study = "Phase 2: not yet collected", pair_type = "unchosen", N = NA_integer_,
-           odds_ratio = NA_real_, lower = NA_real_, upper = NA_real_)) |>
-  filter(pair_type == "unchosen")
-key_rows |> transmute(Study, N, OR = round(odds_ratio, 3),
-  `95% HPDI` = format_hpdi(lower, upper)) |>
-  knitr::kable(caption = "Unchosen-category model intercept: odds of choosing the category paired with a rewarded chosen item. OR below1 indicates the predicted inverse preference. Original: Wang et al. (2026), section3.2; pilot: posterior median OR and exponentiated log-odds HPDI.")
+# The summary, addendum, and Results share the same excluded Phase 1 data.
+key_phase1_data <- phase1
+key_phase1_n <- if (is.null(phase1)) NA_integer_ else n_distinct(phase1$model_data$pid)
+key_phase1_estimates <- phase1_estimates
+
+key_row <- function(study, estimates, n, collected) {
+  if (!collected) {
+    return(tibble(Study = study, N = "not yet collected", OR = "not yet collected", `95% HPDI` = ""))
+  }
+  if (!nrow(estimates)) {
+    return(tibble(Study = study, N = as.character(n), OR = "not estimable", `95% HPDI` = ""))
+  }
+  estimates |> filter(pair_type == "unchosen") |>
+    transmute(Study = study, N = as.character(N),
+              OR = formatC(odds_ratio, format = "f", digits = 3),
+              `95% HPDI` = format_hpdi(lower, upper))
+}
+key_rows <- bind_rows(
+  key_row("Original", original, original_n, TRUE),
+  key_row("Phase 1: replication (Pilot B)", key_phase1_estimates, key_phase1_n, !is.null(key_phase1_data)),
+  key_row("Phase 2: extension", phase2_estimates,
+          if (is.null(phase2)) NA_integer_ else n_distinct(phase2$model_data$pid), !is.null(phase2))
+)
+key_rows |> knitr::kable(caption = "Unchosen-category model intercept: odds of choosing the category paired with a rewarded chosen item. OR below1 indicates the predicted inverse preference. Original: Wang et al. (2026), section3.2; Pilot B: posterior median OR and exponentiated log-odds HPDI.")
 ```
 
 # Phase 1: Replication
 
 ## Introduction
 
-I'm interested in how memory and decision-making interact to support adaptive behavior, including how information from past experiences can guide decisions in novel situations. Wang et al. (2026) found that value inferred for an unchosen option generalized to novel objects within the same semantic category. I would like to specifically replicate the finding that participants preferred novel items that were semantically similar to an unchosen option whose chosen counterpart received no reward over novel items related to an unchosen option whose chosen counterpart was rewarded, because it suggested how we generalize value beyond direct experience to make adaptive decisions.
+I’m interested in how memory and decision-making interact to support adaptive behavior, including how information from past experiences can guide decisions in novel situations. Wang et al. (2026) found that value inferred for an unchosen option generalized to novel objects within the same semantic category. I would like to specifically replicate the finding that participants preferred novel items that were semantically similar to an unchosen option whose chosen counterpart received no reward over novel items related to an unchosen option whose chosen counterpart was rewarded, because it suggested how we generalize value beyond direct experience to make adaptive decisions.
 
-The original study used 128 object images, with 16 from each of eight semantic categories in the DinoLab Object Database. The exact collection of images used in the study is not publicly available, and it would be challenging to curate the set myself if the authors do not get back to me in time to share the stimulus set. Participants were asked to repeatedly choose one item from each pair that they predicted would be more valuable during deliberation and then learned whether the chosen items received a reward or no reward during outcome learning. In the final decision phase, they chose between noval examplars from all categories to test whether previously learned and inferred value generalized to novel objects from the same semantic categories. A surprise memory test of item and associative memory was conducted to understand the relationship between memory for original associations and novel decisions.
+The original study used 128 object images, with 16 from each of eight semantic categories in the DinoLab Object Database. Participants were asked to repeatedly choose one item from each pair that they predicted would be more valuable and justify their decisions during deliberation phase. They then learned whether the chosen items received a reward or no reward during outcome learning phase. In the final decision phase, they chose between novel exemplars from all categories to test whether previously learned and inferred value of unchosen options generalized to novel objects from the same semantic categories. A surprise memory test of item and associative memory was conducted to understand the relationship between memory for original associations and novel decisions.
 
-The key statistical test was a multilevel Bayesian logistic regression testing whether participants' selection of novel items depended on whether the corresponding previously seen unchosen item had been paired with a chosen item that received a reward or no reward.
-
-A possible extension was to also test choice and outcome memory to examine whether memory for the original choice, its outcome, and the association between chosen and unchosen pairs together predicted the generalization of inferred value to novel items.
+The key statistical test was a multilevel Bayesian logistic regression testing whether participants’ selection of novel items depended on whether the corresponding previously seen unchosen item had been paired with a chosen item that received a reward or no reward.
 
 ## Methods
 
@@ -296,7 +343,7 @@ For comparison, 2.5 times the original sample would be 308 (rounded up from 307.
 
 ### Planned sample
 
-The experiment will recruit U.S. residents aged 18-35 who are fluent in English through Prolific. Participants must complete the experiment on a computer with a keyboard. Those who fail to respond on three timed practice trials or do not complete the experiment will be excluded. Data collection will continue until 118 participants pass the exclusion criteria, providing approximately 80% power, or until the class budget is reached, whichever comes first.
+The experiment will recruit U.S. residents aged 18-35 who are fluent in English through Prolific. Participants must complete the experiment on a computer with a keyboard. Those who fail to respond on three timed practice trials or do not complete the experiment will be excluded. Participants are also excluded if accuracy on the letter attention checks is below 10% or if the nonresponse rate is above 90%. Data collection will continue until 118 participants pass the exclusion criteria, providing approximately 80% power.
 
 ### Materials
 
@@ -312,11 +359,11 @@ The replication uses the same set of stimuli downloaded from the DinoLab Object 
 
 ### Procedure
 
-1.  Consent and introduction: Participants provide Stanford course consent and receive instructions to build a valuable stamp portfolio by selecting pictures. Adaptation: Course consent and reconstructed instructions (which will be replaced by the original instructions if authors share the materials).
+1.  Consent and introduction: Participants provide Stanford course consent and receive instructions to build a valuable stamp portfolio by selecting pictures. Adaptation: Course consent and reconstructed instructions based on original instructions for better clarity.
 
-2.  Pre-experimental phase: Participants rate 24 randomized pictures (three from each of eight categories) “based on their personal preferences” on a 0-100 scale.
+2.  Pre-experimental phase: Participants rate 24 randomized pictures (three from each of eight categories) “based on their personal preferences” using a slide bar on a 0-100 scale.
 
-3.  Deliberation phase: Participants “choose the images they predicted would be placed on the most valuable stamp” across four pairs repeated in two practice rounds and one final round (12 choices in total). Practice choices are timed (5s), while final choices are untimed. The second practice round requires written justifications for their choices. Three missed practice responses terminate the session.
+3.  Deliberation phase: Participants “choose the images they predicted would be placed on the most valuable stamp” across four pairs repeated in two practice rounds and one final round (12 choices in total). Participants press J to choose the left option and K to choose the right option. Practice choices are timed (5s), while final choices are untimed. The second practice round requires written justifications for their choices. Three missed practice responses terminate the session.
 
 4.  Choice Outcome phase: Four chosen pictures receive randomly assigned outcomes (two rewarded, two unrewarded), with pictures shown alone for 1 s followed by “reward or no reward” for 2 s with pictures. Unchosen pictures receive no feedback.
 
@@ -334,15 +381,18 @@ Participants are expected to finish the entire experiment in 10-20 minutes.
 
 **Key analysis of interest.** Participants are predicted to prefer novel items from unchosen categories whose chosen counterparts received no reward, than those whose counterparts were rewarded. It will be tested using a multilevel Bayesian logistic regression on the 24 unchosen-category decisions per participant, controlling for initial category preferences and including a random intercept for each participant. The effect size will be reported as an odds ratio with a 95% credible interval.
 
-**Exclusions.** Participants are excluded if they failed to respond to three times practice trials, or if they did not complete the study.
+**Secondary confirmatory and exploratory analyses.** Secondary confirmatory analyses will use multilevel Bayesian logistic regressions for chosen-category decisions and for chosen- and unchosen-category decisions combined. Exploratory follow-up analyses may include the original study’s Bayesian multilevel analyses of RT and adaptive choice, descriptive memory summaries, and memory–choice analyses using Spearman correlations and permutation tests.
+
+**Exclusions.** Participants are excluded if they fail to respond on three timed practice trials or do not complete the study. Participants are also excluded if accuracy on the letter attention checks is below 10% or if the nonresponse rate is above 90%. Both rates use all presented attention checks, and nonresponses count as incorrect. Participants with no presented attention checks are not excluded on this basis.
 
 ### Differences from the original study
 
 | Aspect | Original study | This replication | Expected to matter? |
-|------------------|------------------|------------------|------------------|
+|------------------|-------------------|------------------|------------------|
 | Sample | University of Chicago SONA and MTurk/CloudResearch | Prolific | Unlikely. Participants will be recruited using the same eligibility criteria. |
 | Stimuli | Ocean creatures category includes a cinnamon bun | Replaced the cinnamon bun with a shrimp | Unlikely. The replacement better matches the intended semantic category. |
-| Instructions | Instructions provided in .svg files (exact wording unknown) | Reconstructed instructions based on the original paper | Unlikely though there is a chance differences in wording could affect how participants understand the task. |
+| Instructions | Long paragraphs in the original SVG instructions | Reconstructed shorter phase-specific instructions for better clarity, with typos corrected | Unlikely though there is a chance differences in wording could affect how participants understand the task. |
+| Exclusions | Three missed timed Deliberation responses or incompletion | Same criteria, plus letter attention-check accuracy below 10% or nonresponse rate above 90%, following the original analysis code (although these criteria were not reported for Experiment 1 in the paper) | Unlikely. Unattended participants were also excluded from the original Experiment 2. |
 
 ### Methods addendum (post data collection)
 
@@ -374,45 +424,67 @@ if (!have_data) {
 ```{r}
 #| label: phase1-data
 #| eval: !expr have_data
-participants <- phase1$participants
-trials <- phase1$trials
-errors <- phase1$errors
-complete <- phase1$complete
-keep <- phase1$keep
+# Loaded and excluded by read_phase(), under Key statistics, so Phase 1 and Phase 2 share one
+# exclusion rule.
+participants  <- phase1$participants
+trials        <- phase1$trials
+errors        <- phase1$errors
+complete      <- phase1$complete
+keep          <- phase1$keep
 n_no_response <- phase1$n_no_response
 ```
 
 ```{r}
 #| label: funnel
 #| eval: !expr have_data
-tibble(Step = c("Recorded sessions", "Completed sessions", "Retained pilot volunteers", "Participants with usable model rows"),
-  N = c(nrow(participants), nrow(complete), nrow(keep), n_distinct(phase1$model_data$pid))) |>
-  knitr::kable(caption = "Session-level accounting; page loads include incomplete checks, not additional recruited volunteers.")
-phase1$choices |> group_by(pair_type) |>
-  summarise(`Recorded decisions` = n(), `Choice timeouts` = sum(timed_out), .groups = "drop") |>
-  left_join(phase1$model_data |> count(pair_type, name = "Usable model rows"), by = "pair_type") |>
-  knitr::kable(caption = "Decision rows before and after the source-code rating-covariate filter.")
+funnel_levels <- c("Started", "Completed", "Passed exclusion criteria")
+bind_rows(
+  participants |> mutate(step = "Started"),
+  complete     |> mutate(step = "Completed"),
+  keep         |> mutate(step = "Passed exclusion criteria")
+) |>
+  mutate(step = factor(step, levels = funnel_levels)) |>
+  count(step, condition, .drop = FALSE) |>
+  pivot_wider(names_from = condition, values_from = n, values_fill = 0) |>
+  mutate(Total = rowSums(across(-step))) |>
+  rename(Step = step) |>
+  knitr::kable(caption = "Participants at each step, by frame. Differences between frames in attrition or exclusion are a threat to validity and should be discussed.")
 ```
 
 ```{r}
 #| label: sample-text
 #| eval: !expr have_data
 #| echo: false
-tibble(`Completed volunteers` = nrow(complete), `Retained volunteers` = nrow(keep),
-       `Model participants` = n_distinct(phase1$model_data$pid),
-       `Usable final decisions` = nrow(phase1$model_data)) |> knitr::kable()
+#| results: asis
+cat(sprintf("Of %d participants who started, %d completed the study and %d met the exclusion criteria.",
+            nrow(participants), nrow(complete), nrow(keep)))
+if (n_no_response > 0) {
+  cat(sprintf(" %d completed session(s) contained no response to any speeded trial and were excluded on that basis.",
+              n_no_response))
+}
+if (nrow(keep) == 0) cat(" No participants remain for analysis yet, so the results below are empty.")
+cat("\n")
 ```
 
 ```{r}
 #| label: demographics
 #| eval: !expr have_data
-demo <- phase1$retained |> filter(task == "demographics") |>
-  mutate(resp = map(response, fromJSON),
-    age = map_dbl(resp, ~ suppressWarnings(as.numeric(.x$age %||% NA))))
-if (nrow(demo)) demo |> summarise(N = n(),
-  `Mean age` = if (all(is.na(age))) NA_real_ else mean(age, na.rm = TRUE),
-  `SD age` = sd(age, na.rm = TRUE), `Age missing` = sum(is.na(age))) |>
-  knitr::kable(digits = 2, caption = "Optional age responses; missing answers are not exclusion criteria.")
+demo <- trials |>
+  filter(task == "demographics", participant_id %in% keep$participant_id) |>
+  mutate(resp = map(response, ~ fromJSON(.x))) |>
+  transmute(
+    participant_id,
+    age    = map_dbl(resp, ~ as.numeric(.x$age %||% NA)),
+    gender = map_chr(resp, ~ as.character(.x$gender %||% NA))
+  )
+
+if (nrow(demo) > 0) {
+  demo |>
+    summarise(N = n(), `Mean age` = round(mean(age, na.rm = TRUE), 1),
+              `SD age` = round(sd(age, na.rm = TRUE), 1),
+              `Age not given` = sum(is.na(age))) |>
+    knitr::kable(caption = "Age of the analysed sample.")
+}
 ```
 
 #### Deviations from the preregistered plan
@@ -435,22 +507,55 @@ Data preparation follows the analysis plan. Loading and exclusions are done by t
 
 ### Confirmatory analysis
 
+#### Primary analysis
+
 ```{r}
 #| label: confirmatory
 #| eval: !expr have_data
 #| results: asis
+# The primary model matches the Introduction and Methods: unchosen trials only.
+# Chosen and combined models are reported below as secondary analyses.
 if (!is.null(phase1_fits)) {
+  primary_fit <- phase1_fits$unchosen
   cat("```text\n")
-  print(phase1_fits$main, digits = 3)
-  print(phase1_fits$unchosen, digits = 3)
+  print(primary_fit, digits = 3)
   cat("\n```\n\n")
-  main_fixed <- rstanarm::fixef(phase1_fits$main)
-  fixed_table <- map_dfr(names(main_fixed), function(term) or_summary(phase1_fits$main, term) |> mutate(Term = term)) |>
+  primary_fixed <- rstanarm::fixef(primary_fit)
+  primary_table <- map_dfr(names(primary_fixed), function(term)
+    or_summary(primary_fit, term) |> mutate(Term = term)) |>
     select(Term, everything())
-  cat(knitr::kable(fixed_table, digits = 3, caption = "Revised original main model: NS+ choice by pair type, rating covariate, and their interaction."), sep = "\n")
+  cat(knitr::kable(primary_table, digits = 3,
+    caption = "Primary confirmatory analysis: unchosen-category model, adjusted for the source-code rating covariate. Intercept OR below 1 is the predicted inverse preference."), sep = "\n")
   cat("\n\n")
-  cat(knitr::kable(diagnostics(phase1_fits), digits = 3,
-    caption = "MCMC diagnostics: inspect Rhat, effective sample sizes, and divergences before interpretation."), sep = "\n")
+  cat(knitr::kable(diagnostics(phase1_fits["unchosen"]), digits = 3,
+    caption = "MCMC diagnostics for the primary unchosen-category model."), sep = "\n")
+  cat("\n\n")
+}
+```
+
+#### Secondary analyses
+
+```{r}
+#| eval: !expr have_data
+#| results: asis
+# Reuse the already fitted models; no extra model fitting or exclusions.
+if (!is.null(phase1_fits)) {
+  secondary_models <- list(`Chosen-category model` = phase1_fits$chosen,
+                          `Combined model` = phase1_fits$main)
+  for (model_name in names(secondary_models)) {
+    fit <- secondary_models[[model_name]]
+    secondary_table <- map_dfr(names(rstanarm::fixef(fit)), function(term)
+      or_summary(fit, term) |> mutate(Term = term)) |>
+      select(Term, everything())
+    cat(knitr::kable(secondary_table, digits = 3,
+      caption = paste0("Secondary confirmatory analysis: ", model_name,
+        if (model_name == "Combined model")
+          ". Trial type is coded chosen = 0, unchosen = 1; the model includes the rating covariate and its interaction with trial type."
+        else ". Adjusted for the source-code rating covariate.")), sep = "\n")
+    cat("\n\n")
+  }
+  cat(knitr::kable(diagnostics(secondary_models), digits = 3,
+    caption = "MCMC diagnostics for the secondary chosen-category and combined models."), sep = "\n")
   cat("\n\n")
 }
 ```
@@ -467,10 +572,11 @@ Judge the replication on effect sizes, not only on whether the key test is signi
 #| label: comparison
 #| eval: !expr have_data
 bind_rows(original |> mutate(Study = "Original: Exp1"),
-          phase1_estimates |> mutate(Study = "Phase 1: Pilot A")) |>
+          phase1_estimates |> mutate(Study = "Phase 1: replication (Pilot B)")) |>
+  filter(pair_type == "unchosen") |>
   transmute(Study, `Pair type` = pair_type, N, OR = round(odds_ratio, 3),
             `95% HPDI` = format_hpdi(lower, upper)) |>
-  knitr::kable(caption = "Separate chosen/unchosen model intercepts, adjusted using the source-code rating covariate. Original published OR; pilot posterior median OR.")
+  knitr::kable(caption = "Primary unchosen-category model intercept: original published OR and Pilot B posterior median OR, with 95% HPD intervals. The chosen and combined models are secondary and do not determine the replication assessment.")
 ```
 
 ```{r}
@@ -482,7 +588,7 @@ if (nrow(phase1_estimates)) phase1_estimates |>
   transmute(`Predicted direction (OR<1)` = odds_ratio < 1,
     `95% HPDI below1` = upper < 1,
     `95% HPDI includes original0.69` = lower <= 0.69 & upper >= 0.69) |>
-  knitr::kable(caption = "Pilot diagnostics only; three non-naive volunteers do not establish a replication outcome.")
+  knitr::kable(caption = "Pilot diagnostics only; the small Pilot B sample does not establish a replication outcome.")
 ```
 
 ::: {.callout-tip icon="false"}
@@ -512,10 +618,11 @@ Whichever you choose, use the same measure, scale, condition order and error-bar
 ```{r}
 #| label: fig-comparison
 #| eval: !expr have_data
-#| fig-cap: "Original Experiment1 (Wang et al.,2026, section3.2) and Pilot A. Points are model-intercept odds ratios for choosing NS+; bars are95% HPD intervals on log odds, exponentiated. Original points use published estimates; pilot points use posterior medians. All panels use the same scale. The dashed line is OR=1."
+#| fig-cap: "Primary unchosen-category effect in original Experiment 1 (Wang et al., 2026, section 3.2) and Pilot B. Points are model-intercept odds ratios for choosing NS+; bars are 95% HPD intervals on log odds, exponentiated. Original points use published estimates; pilot points use posterior medians. Both panels use the same scale. The dashed line is OR = 1. Pilot B checks the pipeline and does not establish a final replication outcome."
 #| fig-width: 8
 #| fig-height: 4
-comparison_plot(`Original: Exp1` = original, `Pilot A` = phase1_estimates)
+comparison_plot(`Original: Exp1` = filter(original, pair_type == "unchosen"),
+                `Pilot B` = filter(phase1_estimates, pair_type == "unchosen"))
 ```
 
 ### Exploratory analyses
@@ -529,17 +636,209 @@ Any follow-up analyses (optional). Label them clearly as exploratory: they were 
 ```{r}
 #| label: exploratory-rt
 #| eval: !expr have_data
-phase1$choices |> filter(!timed_out, !is.na(rt)) |> group_by(pair_type) |>
-  summarise(`Mean RT (ms)` = mean(rt), `SD RT (ms)` = sd(rt), Trials = n(), .groups = "drop") |>
-  knitr::kable(digits = 1, caption = "Descriptive final-choice RTs; no additional exploratory model fitted.")
+#| cache: true
+#| cache.extra: !expr list(id = experiment_id, hashes = tools::md5sum(analysis_input_files[file.exists(analysis_input_files)]), rstanarm = as.character(packageVersion("rstanarm")))
+#| results: asis
+# Wang et al. (2026), sections 2.4.3–2.4.4; OSF xjhkf,
+# Experiment_1_analysis.Rmd: RT models (1194–1217, 1354–1374), memory
+# scoring (1690–1745, 1913–1920), corrected correlations (2141–2217).
+# No extra source-Rmd supplementary regressions are added here.
+prepare_exploratory_choices <- function(d) {
+  # These models have no initial-preference covariate: a missing rating does
+  # not discard an otherwise usable RT/choice. Participant exclusions persist.
+  d$choices |>
+    filter(pair_type %in% c("chosen", "unchosen"), !timed_out,
+           !is.na(p_ns), is.finite(rt), rt > 0) |>
+    mutate(pid = factor(participant_id),
+           trial_type = as.integer(pair_type == "unchosen"),
+           adaptive = if_else(pair_type == "chosen", p_ns, 1L - p_ns)) |>
+    group_by(participant_id) |>
+    mutate(z_rt = if (n() > 1L && sd(rt) > 0) as.numeric(scale(rt)) else NA_real_) |>
+    ungroup()
+}
+score_exploratory_memory <- function(d) {
+  items <- d$retained |> filter(task == "item_memory") |>
+    mutate(old = as_bool(is_old), recognized = as_bool(responded_old))
+  associations <- d$retained |> filter(task == "associative_memory") |>
+    select(participant_id, memory_id, response, option_roles)
+  # Match by explicit memory ID, not adjacent trial indices or row order.
+  stopifnot(!anyDuplicated(items[c("participant_id", "memory_id")]),
+            !anyDuplicated(associations[c("participant_id", "memory_id")]))
+  selected_role <- function(response, roles) {
+    index <- suppressWarnings(as.integer(response))
+    if (is.na(index)) return(NA_character_) # Timed-out pairing: no credit.
+    options <- jsonlite::fromJSON(roles)
+    stopifnot(index >= 1L, index <= length(options))
+    options[[index]]
+  }
+  associations <- associations |>
+    mutate(role = map2_chr(response, option_roles, selected_role),
+           association_present = TRUE)
+  scored <- items |> filter(old) |>
+    left_join(associations, by = c("participant_id", "memory_id"),
+              suffix = c("", "_association"))
+  # A recognized cue must have its conditional pairing record. Missing export
+  # records are not silently converted to errors or fabricated responses.
+  stopifnot(all(!scored$recognized | !is.na(scored$association_present)))
+  scored <- scored |>
+    mutate(category_credit = recognized & coalesce(role %in% c("target", "same_category_lure"), FALSE),
+           item_credit = recognized & coalesce(role == "target", FALSE),
+           points = as.integer(recognized) + as.integer(category_credit) + as.integer(item_credit))
+  old_scores <- scored |> group_by(participant_id) |>
+    summarise(old_trials = n(), raw_memory = mean(points) / 3, .groups = "drop")
+  foils <- items |> filter(!old) |> group_by(participant_id) |>
+    summarise(foil_trials = n(), false_alarm_rate = mean(recognized), .groups = "drop")
+  old_scores |> full_join(foils, by = "participant_id") |>
+    mutate(corrected_memory = if_else(old_trials == 4L & foil_trials == 4L,
+                                      raw_memory - false_alarm_rate, NA_real_))
+}
+safe_spearman <- function(x, y) {
+  if (length(x) < 3L || n_distinct(x) < 2L || n_distinct(y) < 2L) return(NA_real_)
+  unname(cor(x, y, method = "spearman"))
+}
+spearman_permutation <- function(x, y, B = 10000L, seed = 123L) {
+  valid <- is.finite(x) & is.finite(y)
+  x <- x[valid]; y <- y[valid]
+  observed <- safe_spearman(x, y)
+  if (!is.finite(observed)) return(tibble(N = length(x), rho = NA_real_,
+    `Permutation p (two-sided)` = NA_real_, `Valid permutations` = 0L,
+    Status = "Not estimable: fewer than 3 complete pairs or no variation"))
+  set.seed(seed)
+  # Permuting participant-level outcomes preserves tied ranks. No extra
+  # package is needed for the authors' rank-based Monte Carlo test.
+  null <- replicate(B, safe_spearman(x, sample(y)))
+  tibble(N = length(x), rho = observed,
+    `Permutation p (two-sided)` = (1 + sum(abs(null) >= abs(observed) - 1e-12)) / (B + 1),
+    `Valid permutations` = B, Status = "Exploratory")
+}
+memory_correlation_difference <- function(d, B = 10000L, seed = 123L) {
+  # Reproduce the authors' pooled group-label shuffle (not a within-person
+  # swap test). Each retained participant contributes one row per trial type.
+  wide <- d |> filter(is.finite(corrected_memory), is.finite(adaptive_proportion)) |>
+    select(participant_id, corrected_memory, pair_type, adaptive_proportion) |>
+    pivot_wider(names_from = pair_type, values_from = adaptive_proportion)
+  if (!"chosen" %in% names(wide)) wide$chosen <- NA_real_
+  if (!"unchosen" %in% names(wide)) wide$unchosen <- NA_real_
+  wide <- wide |> filter(is.finite(chosen), is.finite(unchosen))
+  observed <- safe_spearman(wide$corrected_memory, wide$chosen) -
+    safe_spearman(wide$corrected_memory, wide$unchosen)
+  if (!is.finite(observed)) return(tibble(N = nrow(wide),
+    `rho chosen minus unchosen` = NA_real_, `Permutation p (two-sided)` = NA_real_,
+    `Valid permutations` = 0L, Status = "Not estimable: insufficient pairs or no variation"))
+  x <- rep(wide$corrected_memory, 2L)
+  y <- c(wide$chosen, wide$unchosen)
+  group <- rep(c(TRUE, FALSE), each = nrow(wide))
+  set.seed(seed)
+  null <- replicate(B, {
+    shuffled <- sample(group)
+    safe_spearman(x[shuffled], y[shuffled]) - safe_spearman(x[!shuffled], y[!shuffled])
+  })
+  valid <- is.finite(null)
+  tibble(N = nrow(wide), `rho chosen minus unchosen` = observed,
+    `Permutation p (two-sided)` = if (any(valid))
+      (1 + sum(abs(null[valid]) >= abs(observed) - 1e-12)) / (1 + sum(valid)) else NA_real_,
+    `Valid permutations` = sum(valid),
+    Status = if (all(valid)) "Exploratory: authors' pooled-label shuffle" else
+      "Exploratory: undefined permutations omitted; inspect small-sample limitations")
+}
+fit_exploratory_rt <- function(x) {
+  if (n_distinct(x$pid) < 2L || n_distinct(x$trial_type) < 2L) return(list())
+  # Source RT model uses default fixed-effect/intercept/auxiliary priors;
+  # source RT-choice model explicitly uses normal(0, 2.5). Preserve that
+  # distinction instead of borrowing logistic priors for raw RT in ms.
+  rt_fit <- rstanarm::stan_glmer(rt ~ trial_type + (1 | pid), data = x,
+    family = inverse.gaussian(link = "log"),
+    prior_covariance = rstanarm::decov(regularization = 1),
+    chains = 4, iter = 4000, warmup = 2000, seed = 123, refresh = 0)
+  sampler <- rstan::get_sampler_params(rt_fit$stanfit, inc_warmup = FALSE)
+  if (sum(vapply(sampler, function(s) sum(s[, "divergent__"]), numeric(1))) > 0) {
+    rt_fit <- update(rt_fit, adapt_delta = 0.99, refresh = 0)
+    attr(rt_fit, "tolerance_tightened") <- TRUE
+  }
+  fits <- list(`RT by trial type` = rt_fit)
+  choice_data <- x |> filter(is.finite(z_rt))
+  if (n_distinct(choice_data$pid) >= 2L && n_distinct(choice_data$trial_type) == 2L &&
+      n_distinct(choice_data$adaptive) == 2L) {
+    fits[["Adaptive choice by RT"]] <- fit_source_model(choice_data,
+      adaptive ~ trial_type * z_rt + (1 | pid))
+  }
+  fits
+}
+exploratory_fixed_effects <- function(fits) {
+  imap_dfr(fits, function(fit, model) {
+    map_dfr(names(rstanarm::fixef(fit)), function(term) {
+      draws <- as.matrix(fit)[, term]
+      hpdi <- coda::HPDinterval(coda::mcmc(draws), prob = 0.95)[1, ]
+      tibble(Model = model, Term = term, `Log coefficient` = median(draws),
+        `95% HPDI lower (log)` = hpdi[1], `95% HPDI upper (log)` = hpdi[2],
+        `Exponentiated coefficient` = exp(median(draws)),
+        `95% HPDI lower (exp)` = exp(hpdi[1]), `95% HPDI upper (exp)` = exp(hpdi[2]))
+    })
+  })
+}
+exploratory_diagnostic_status <- function(fits) {
+  diagnostics(fits) |>
+    mutate(`Estimates reportable` = is.finite(`Maximum Rhat`) & `Maximum Rhat` <= 1.01 &
+             is.finite(`Minimum effective N`) & `Minimum effective N` >= 400 & Divergences == 0L)
+}
+show_exploratory_table <- function(x, caption, digits = 3) {
+  cat(knitr::kable(x, digits = digits, caption = caption), sep = "\n")
+  cat("\n\n")
+}
+exploratory_choices <- prepare_exploratory_choices(phase1)
+exploratory_memory <- score_exploratory_memory(phase1)
+exploratory_rt_fits <- fit_exploratory_rt(exploratory_choices)
+show_exploratory_table(
+  exploratory_choices |> group_by(pair_type) |>
+    summarise(N = n_distinct(participant_id), Trials = n(),
+      `Mean RT (ms)` = mean(rt), `SD RT (ms)` = sd(rt), .groups = "drop"),
+  "Exploratory final-choice RTs: responded trials with finite, positive RT; no additional trimming.", 1)
+if (length(exploratory_rt_fits)) {
+  exploratory_diagnostics <- exploratory_diagnostic_status(exploratory_rt_fits)
+  reportable_models <- exploratory_diagnostics$Model[exploratory_diagnostics$`Estimates reportable`]
+  withheld_models <- exploratory_diagnostics$Model[!exploratory_diagnostics$`Estimates reportable`]
+  if (length(reportable_models)) show_exploratory_table(
+    exploratory_fixed_effects(exploratory_rt_fits[reportable_models]),
+    "Exploratory Bayesian RT models. Exponentiated RT slopes are RT ratios; the exponentiated RT intercept is baseline RT in milliseconds. Exponentiated logistic coefficients are odds ratios for adaptive choice. Trial type: chosen = 0, unchosen = 1; RT z-scores are within participant.")
+  if (length(withheld_models)) cat(paste0(
+    "Estimates withheld because sampler diagnostics failed: ",
+    paste(withheld_models, collapse = ", "),
+    ". The source model and priors are retained; no substitute model was fitted.\n\n"))
+  show_exploratory_table(exploratory_diagnostics,
+    paste0("MCMC diagnostics for exploratory models (N = ",
+      n_distinct(exploratory_choices$participant_id),
+      "). Estimates require maximum Rhat <= 1.01, minimum effective N >= 400 and zero divergences. Pilot estimates check the pipeline and do not establish final-sample effects."))
+  if (!"Adaptive choice by RT" %in% names(exploratory_rt_fits))
+    cat("Adaptive-choice RT model not estimable: insufficient participants, trial types, RT variation, or outcome variation.\n\n")
+} else {
+  cat("Exploratory RT models not estimable: fewer than two participants or missing trial-type variation.\n\n")
+}
 memory_checks <- phase1$retained |> filter(task == "item_memory") |>
-  group_by(participant_id) |> summarise(`Item accuracy` = mean(as_bool(correct)), .groups = "drop")
+  group_by(participant_id) |> summarise(item_accuracy = mean(as_bool(correct)), .groups = "drop")
 association_checks <- phase1$retained |> filter(task == "associative_memory") |>
-  group_by(participant_id) |> summarise(`Association accuracy` = mean(as_bool(correct)), .groups = "drop")
-memory_checks |> left_join(association_checks, by = "participant_id") |>
-  summarise(`Mean item accuracy` = mean(`Item accuracy`),
-            `Mean conditional association accuracy` = mean(`Association accuracy`, na.rm = TRUE)) |>
-  knitr::kable(digits = 3, caption = "Descriptive memory checks; associative accuracy is conditional on recognizing the original chosen cue.")
+  group_by(participant_id) |> summarise(association_accuracy = mean(as_bool(correct)), .groups = "drop")
+show_exploratory_table(
+  memory_checks |> left_join(association_checks, by = "participant_id") |>
+    left_join(exploratory_memory, by = "participant_id") |>
+    summarise(N = n(), `Mean item accuracy` = mean(item_accuracy),
+      `Mean conditional association accuracy` = mean(association_accuracy, na.rm = TRUE),
+      `N with complete corrected score` = sum(is.finite(corrected_memory)),
+      `Mean corrected memory score` = mean(corrected_memory, na.rm = TRUE)),
+  "Memory checks and corrected score. Association accuracy is conditional on recognizing the original chosen cue; the corrected score includes all four old cues, then subtracts the false-alarm rate across four novel items.")
+# Match source aggregation over responded positive-RT trials; the same
+# participant memory score is related separately to chosen/unchosen choices.
+memory_choice <- exploratory_choices |> group_by(participant_id, pair_type) |>
+  summarise(adaptive_proportion = mean(adaptive), .groups = "drop") |>
+  left_join(exploratory_memory, by = "participant_id")
+memory_correlations <- map_dfr(c("chosen", "unchosen"), function(type) {
+  d <- memory_choice |> filter(pair_type == type)
+  spearman_permutation(d$corrected_memory, d$adaptive_proportion) |>
+    mutate(`Pair type` = type, .before = 1)
+})
+show_exploratory_table(memory_correlations,
+  "Exploratory corrected-memory versus adaptive-choice Spearman correlations. Two-sided participant-outcome permutation tests: 10,000 shuffles, seed 123, plus-one correction; participants need a complete memory score.")
+show_exploratory_table(memory_correlation_difference(memory_choice),
+  "Exploratory difference in Spearman correlations (chosen minus unchosen), using the authors' pooled trial-type-label shuffle over complete participant pairs: 10,000 permutations, seed 123, two-sided plus-one correction. This reproduces their pooled-label procedure rather than a paired within-participant swap test.")
 ```
 
 ```{r}
