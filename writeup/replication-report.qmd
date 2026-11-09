@@ -53,7 +53,7 @@ library(coda)
 library(coin)
 library(pwr)
 options(mc.cores = min(4L, parallel::detectCores()))
-experiment_id <- Sys.getenv("PSYCH251_PHASE1_ID", "wang2026-exp1-pilot-b")
+experiment_id <- Sys.getenv("PSYCH251_PHASE1_ID", "wang2026-exp1-main")
 experiment_id_phase2 <- Sys.getenv("PSYCH251_PHASE2_ID", "wang2026-phase2")
 analysis_input_files <- unlist(lapply(c(experiment_id, experiment_id_phase2), function(id)
   file.path("..", "data", "raw", id, c("participants.csv", "trials.csv", "errors.csv"))))
@@ -86,7 +86,7 @@ original_d <- abs(original_summary$unchosen_cohens_d)
 ## Project links
 
 - **Original paper:** Wang, Z., Li, X., & Bakkour, A. (2026). The inferred value of unchosen options spreads to related items in memory. Cognition, 272, 106508. <https://doi.org/10.1016/j.cognition.2026.106508>
-- **Preregistration:** [OSF registration](https://osf.io/XXXXX) *(registered YYYY-MM-DD, before final data collection)*
+- **Preregistration:** [OSF registration](https://osf.io/8xef4) *(registered 2026-11-02, before final data collection)*
 - **Live experiment:** <https://psych251.github.io/wang2026/> (take the study exactly as participants did)
 - **Repository:** <https://github.com/psych251/wang2026> (experiment code, data, and this report)
 :::
@@ -97,20 +97,17 @@ original_d <- abs(original_summary$unchosen_cohens_d)
 |------------------------|------------------------|------------------------|
 | ChatGPT (GPT-6.1 Sol) | Implementing the experimental paradigm | Compared the implementation against the original experiment code and tested with pilots to verify the task procedure and recorded data. |
 | ChatGPT (GPT-6.1 Sol) | Conducting the power analysis | Compared the code with the power analysis code for Experiment 2 of the original study. |
-| ChatGPT (GPT-6.1 Sol) | Preprocessing data and implementing analysis code, tables and figures | Tested preprocessing and scoring using synthetic data and Pilot B exports. Further assessment of model stability requires a larger sample. |
+| ChatGPT (GPT-6.1 Sol) | Preprocessing data and implementing analysis code, tables and figures | Tested preprocessing and scoring using synthetic data and Pilot B exports. |
 | ChatGPT (GPT-6.1 Sol) | Checking consistency with the original analyses and documenting implementation differences | Compared the implemented analyses with the original Experiment 1 analysis code and reviewed the remaining differences. |
 | ChatGPT (GPT-6.1 Sol) | Fixing unknown completion code issue on Prolific | Confirmed the completion status was updated correctly for each participant. |
 | Claude Code (Opus 5.5) | Checking discrepancy among the original paper, code and data | Compared each difference and made decisions for the replication. |
+| Claude Code (Opus 5.5) | Running post hoc analyses and reanalysis of the original data | Check against ChatGPT (GPT-6.1 Sol) |
+| Claude Code (Opus 5.5) | Committing and pushing report and data updates to GitHub | Reviewed the list of committed files and checked the data for identifying information before pushing. |
 
 I wrote all of the text in this report myself. AI tools were not used to write, rewrite or paraphrase it, and were not used to generate, alter, or impute any participant data. I take full responsibility for the content of this report, including any errors introduced by AI tools.
 
 # Key statistics
 
-::: {.callout-tip icon="false"}
-## Guidance
-
-One row per study for the key comparison: the original, your Phase 1 replication, and your Phase 2 extension. The table fills itself in from the data as each phase is exported, using the analysis code below (open "Show the analysis code"), which is shared by both phases so they are analysed identically. Edit that code once, here, to match your design and preregistered exclusion rule. On the scientific-extension track, the Phase 2 row reports the new comparison: adapt its code and say so in the caption.
-:::
 
 ```{r}
 #| label: analysis-functions
@@ -246,18 +243,38 @@ diagnostics <- function(fits) {
       `Sampler tolerance tightened` = isTRUE(attr(fit, "tolerance_tightened")))
   })
 }
-comparison_plot <- function(...) {
+# Forest plot matching the presentation's results slide: unchosen (primary) above
+# chosen, one row per study, original in grey, labels "OR [HPDI]" on the right.
+comparison_plot <- function(..., pair = c("unchosen", "chosen")) {
   studies <- list(...)
   studies <- studies[!map_lgl(studies, ~ is.null(.x) || nrow(.x) == 0)]
-  plotted <- imap_dfr(studies, ~ mutate(.x, Study = .y)) |>
-    mutate(Study = factor(Study, levels = names(studies)),
-      pair_type = factor(pair_type, levels = c("chosen", "unchosen")))
-  ggplot(plotted, aes(x = pair_type, y = odds_ratio, ymin = lower, ymax = upper)) +
-    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey50") +
-    geom_pointrange(colour = "#1E6E76") + scale_y_log10() +
-    facet_wrap(~Study, nrow = 1) +
-    labs(x = "Category-pair type", y = "Odds of choosing NS+ (log scale)") +
-    theme_minimal(base_size = 12)
+  palette <- setNames(c("#9AA3B2", "#1F6FB5", "#2A9D8F")[seq_along(studies)], names(studies))
+  all_rows <- imap_dfr(studies, ~ mutate(.x, Study = .y))
+  # Axis limits from every row, so separate unchosen and chosen figures share one axis.
+  x_limits <- range(c(0.45, 3.2, all_rows$lower, all_rows$upper), na.rm = TRUE)
+  plotted <- all_rows |> filter(pair_type %in% pair) |>
+    mutate(Row = paste0(Study, " (N = ", N, ")"),
+      Panel = factor(if_else(pair_type == "unchosen", "Unchosen\n(primary)", "Chosen"),
+                     levels = c("Unchosen\n(primary)", "Chosen")),
+      Label = sprintf("%.2f [%.2f, %.2f]", odds_ratio, lower, upper))
+  plotted$Row <- factor(plotted$Row, levels = rev(unique(plotted$Row[order(match(plotted$Study, names(studies)))])))
+  facets <- if (length(pair) > 1)
+    facet_grid(Panel ~ ., scales = "free_y", space = "free_y", switch = "y") else NULL
+  ggplot(plotted, aes(x = odds_ratio, y = Row, colour = Study)) +
+    geom_vline(xintercept = 1, linetype = "dashed", colour = "grey40") +
+    geom_errorbar(aes(xmin = lower, xmax = upper), width = 0.25, linewidth = 0.9, orientation = "y") +
+    geom_point(size = 3.2) +
+    geom_text(aes(x = Inf, label = Label), hjust = -0.08, size = 3.6, show.legend = FALSE) +
+    scale_x_log10(breaks = c(0.5, 1, 2, 3), labels = c("0.5", "1", "2", "3"), limits = x_limits) +
+    scale_colour_manual(values = palette, guide = "none") +
+    facets +
+    coord_cartesian(clip = "off") +
+    labs(x = "Odds ratio for choosing NS+ (log scale): < 1 avoid, > 1 prefer", y = NULL) +
+    theme_minimal(base_size = 12) +
+    theme(strip.placement = "outside",
+          strip.text.y.left = element_text(angle = 0, face = "bold", hjust = 1),
+          panel.grid.minor = element_blank(), panel.grid.major.y = element_blank(),
+          plot.margin = margin(5.5, 125, 5.5, 5.5))
 }
 phase1 <- read_phase(experiment_id)
 phase2 <- read_phase(experiment_id_phase2)
@@ -293,11 +310,11 @@ key_row <- function(study, estimates, n, collected) {
 }
 key_rows <- bind_rows(
   key_row("Original", original, original_n, TRUE),
-  key_row("Phase 1: replication (Pilot B)", key_phase1_estimates, key_phase1_n, !is.null(key_phase1_data)),
+  key_row("Phase 1: replication", key_phase1_estimates, key_phase1_n, !is.null(key_phase1_data)),
   key_row("Phase 2: extension", phase2_estimates,
           if (is.null(phase2)) NA_integer_ else n_distinct(phase2$model_data$pid), !is.null(phase2))
 )
-key_rows |> knitr::kable(caption = "Unchosen-category model intercept: odds of choosing the category paired with a rewarded chosen item. OR below1 indicates the predicted inverse preference. Original: Wang et al. (2026), section3.2; Pilot B: posterior median OR and exponentiated log-odds HPDI.")
+key_rows |> knitr::kable(caption = "Unchosen-category model intercept: odds of choosing the category paired with a rewarded chosen item. OR below1 indicates the predicted inverse preference. Original: Wang et al. (2026), section3.2; Phase 1: posterior median OR and exponentiated log-odds HPDI.")
 ```
 
 # Phase 1: Replication
@@ -395,12 +412,6 @@ Participants are expected to finish the entire experiment in 10-20 minutes.
 
 ### Methods addendum (post data collection)
 
-::: {.callout-tip icon="false"}
-## Guidance
-
-Leave this section out of the version you preregister. After data collection, report the actual sample and any deviation from the plan above.
-:::
-
 #### Actual sample
 
 ```{r}
@@ -447,7 +458,7 @@ bind_rows(
   pivot_wider(names_from = condition, values_from = n, values_fill = 0) |>
   mutate(Total = rowSums(across(-step))) |>
   rename(Step = step) |>
-  knitr::kable(caption = "Recorded sessions at each stage of Pilot B, grouped by the recorded condition.")
+  knitr::kable(caption = "Recorded sessions at each stage of Phase 1 data collection, grouped by the recorded condition.")
 ```
 
 ```{r}
@@ -486,87 +497,17 @@ if (nrow(demo) > 0) {
 }
 ```
 
+Of the 159 recorded sessions, 1 participant declined consent, 16 participants missed the repeated practice choice and were excluded according to the preregistered exclusion rule, and 25 participants did not complete the study. The remaining 117 participants completed the study and were retained for analysis. The median completion time was 11.6 minutes (range: 4.2–48.7 minutes).
+
 #### Deviations from the preregistered plan
 
-::: {.callout-tip icon="false"}
-## Guidance
-
-Any deviation from the preregistered plan above, or "None". Changes made after seeing data belong here even if they seem minor, together with the reason.
-:::
+A total of 118 participants were marked as completed on Prolific, as planned. However, one participant did not provide complete data and was excluded, leaving a final sample of 117 participants. Additional post hoc analyses were conducted after inspecting the data and were not specified in the preregistration. The preregistration also noted that exploratory analyses might include descriptive memory summaries, one of which was not included in the final analyses.
 
 ## Results
 
 ### Data preparation
 
-::: {.callout-tip icon="false"}
-## Guidance
-
-Data preparation follows the analysis plan. Loading and exclusions are done by the shared analysis code under Key statistics (open "Show the analysis code"). Describe anything you did to the data beyond that.
-:::
-
-### Memory performance
-
-```{r}
-#| label: memory-performance
-#| eval: !expr have_data
-#| results: asis
-# Original Experiment 1 analysis Rmd, lines 385-438; paper sections 2.4.1/3.1.
-# Use explicit old/new and response fields. In the original export, memoribility
-# denotes correctness and stimulus_type 100/101 denotes old/new; the source's
-# reversed hit/false-alarm coding gives the same d-prime by normal symmetry.
-# Match its half-trial correction at rates 0 and 1 and two-sided t-test vs zero.
-# Unanswered recognition trials contribute to neither rate denominator. A
-# participant needs at least one answered old and one answered new item for
-# d-prime; this does not change inclusion in the primary choice models.
-score_memory_dprime <- function(d) {
-  items <- d$retained |> filter(task == "item_memory") |>
-    mutate(old = as_bool(is_old), recognized = as_bool(responded_old),
-           answered = !is.na(response) & response %in% c("0", "1") & !as_bool(timed_out))
-  stopifnot(!anyDuplicated(items[c("participant_id", "memory_id")]),
-            all(tolower(as.character(items$is_old)) %in% c("true", "false")),
-            all(items$recognized[items$answered] == (items$response[items$answered] == "1")))
-  rates <- items |> group_by(participant_id) |>
-    summarise(old_presented = sum(old), new_presented = sum(!old),
-      hits = sum(old & answered & recognized),
-      misses = sum(old & answered & !recognized),
-      false_alarms = sum(!old & answered & recognized),
-      correct_rejections = sum(!old & answered & !recognized),
-      unanswered = sum(!answered), .groups = "drop") |>
-    mutate(old_answered = hits + misses, new_answered = false_alarms + correct_rejections,
-      hit_rate = if_else(old_answered > 0L, hits / old_answered, NA_real_),
-      false_alarm_rate = if_else(new_answered > 0L, false_alarms / new_answered, NA_real_))
-  correct_extreme <- function(rate, n) case_when(
-    n <= 0L ~ NA_real_, rate == 0 ~ 1 / (2 * n),
-    rate == 1 ~ 1 - 1 / (2 * n), .default = rate)
-  rates |>
-    mutate(hit_rate_corrected = correct_extreme(hit_rate, old_answered),
-      false_alarm_rate_corrected = correct_extreme(false_alarm_rate, new_answered),
-      d_prime = qnorm(hit_rate_corrected) - qnorm(false_alarm_rate_corrected))
-}
-summarize_memory_dprime <- function(scores) {
-  x <- scores$d_prime[is.finite(scores$d_prime)]
-  test <- if (length(x) >= 2L) tryCatch(
-    stats::t.test(x, mu = 0, alternative = "two.sided", conf.level = 0.95),
-    error = function(e) NULL) else NULL
-  tibble(N = length(x), `Mean d-prime` = if (length(x)) mean(x) else NA_real_,
-    `SD d-prime` = if (length(x) >= 2L) sd(x) else NA_real_,
-    t = if (is.null(test)) NA_real_ else unname(test$statistic),
-    df = if (is.null(test)) NA_real_ else unname(test$parameter),
-    p = if (is.null(test)) NA_real_ else test$p.value,
-    `95% CI lower` = if (is.null(test)) NA_real_ else test$conf.int[1],
-    `95% CI upper` = if (is.null(test)) NA_real_ else test$conf.int[2],
-    Status = if (is.null(test)) "Test not estimable: insufficient observations or variation" else "Estimated")
-}
-recognition_dprime <- score_memory_dprime(phase1)
-knitr::kable(summarize_memory_dprime(recognition_dprime), digits = 3,
-  caption = "Recognition memory sensitivity (d-prime): half-trial correction for extreme hit and false-alarm rates; two-sided one-sample t-test against zero with a 95% confidence interval.")
-knitr::kable(recognition_dprime |>
-  summarise(`Participants with recognition records` = n(),
-    `Participants with estimable d-prime` = sum(is.finite(d_prime)),
-    `Answered old trials` = sum(old_answered), `Answered new trials` = sum(new_answered),
-    `Unanswered recognition trials` = sum(unanswered)),
-  caption = "Recognition-data accounting for the d-prime calculation. Missing recognition responses do not change inclusion in the choice analyses.")
-```
+Following the original analysis code, ratings with response times outside the 300-8000 ms range were excluded. This resulted in the removal of 333 out of 2,808 ratings (11.9%), all of which exceeded 8000 ms. Eight participants (across 12 participant-category combinations) had no valid ratings remaining for at least one category, resulting in 130 final-choice trials without the corresponding rating covariate, which were excluded from the analyses. An additional 27 final-choice trials were excluded due to timeouts. The final models included 2,710 unchosen and 2,749 chosen trials.
 
 ### Confirmatory analysis
 
@@ -625,21 +566,15 @@ if (!is.null(phase1_fits)) {
 
 ### Replication assessment
 
-::: {.callout-tip icon="false"}
-## Guidance
-
-Judge the replication on effect sizes, not only on whether the key test is significant. Compare the replication estimate and its interval with the original: does the interval exclude zero, and does it include the original estimate? A significant result much smaller than the original, or a non-significant result whose interval still includes the original effect, are both informative and should be reported as such (Experimentology §3.2).
-:::
-
 ```{r}
 #| label: comparison
 #| eval: !expr have_data
 bind_rows(original |> mutate(Study = "Original: Exp1"),
-          phase1_estimates |> mutate(Study = "Phase 1: replication (Pilot B)")) |>
+          phase1_estimates |> mutate(Study = "Phase 1: replication")) |>
   filter(pair_type == "unchosen") |>
   transmute(Study, `Pair type` = pair_type, N, OR = round(odds_ratio, 3),
             `95% HPDI` = format_hpdi(lower, upper)) |>
-  knitr::kable(caption = "Primary unchosen-category model intercept: original published OR and Pilot B posterior median OR, with 95% HPD intervals. The chosen and combined models are secondary and do not determine the replication assessment.")
+  knitr::kable(caption = "Primary unchosen-category model intercept: original published OR and Phase 1 posterior median OR, with 95% HPD intervals. The chosen and combined models are secondary and do not determine the replication assessment.")
 ```
 
 ```{r}
@@ -651,50 +586,69 @@ if (nrow(phase1_estimates)) phase1_estimates |>
   transmute(`Predicted direction (OR<1)` = odds_ratio < 1,
     `95% HPDI below1` = upper < 1,
     `95% HPDI includes original0.69` = lower <= 0.69 & upper >= 0.69) |>
-  knitr::kable(caption = "Pilot diagnostics only; the small Pilot B sample does not establish a replication outcome.")
+  knitr::kable(caption = "Replication checks for the primary unchosen-category estimate: predicted direction, HPDI below 1, and whether the HPDI includes the original OR.")
 ```
 
-::: {.callout-tip icon="false"}
-## Guidance: show the original next to your replication
 
-**Every report should have a figure that puts the original finding and your replication side by side.** It is the single most informative thing in a replication report: a reader can see at a glance whether the effect came back, and how its size compares. Make it however you can, in roughly this order of preference:
+For the primary unchosen-item analysis, the effect was in the predicted direction (OR = 0.84, 95% HPDI [0.63, 1.10]), but the credible interval included 1, indicating that the evidence was inconclusive. The interval also included the original estimate (OR = 0.69), with P(OR < 1) = 0.89. For the secondary chosen-item analysis, the effect was in the predicted direction (OR = 1.46, 95% HPDI [1.11, 1.93]), with the credible interval excluding 1, supporting replication of the effect, although the estimate was smaller than the original (OR = 2.01).
 
-1.  **Replot both from numbers.** Enter the original's summary statistics (means or proportions, with SDs, SEs or CIs, and Ns) in the original-study chunk at the top of this file, and plot them on the same axes as yours. That is what the demo figure below does.
-
-2.  **Replot the original from its data**, if the authors shared it or it is in an open repository, using exactly the same plotting code as for your own data.
-
-3.  **Show the original figure as an image** next to yours if neither is possible. Save a screenshot of it, for example as `writeup/images/original-figure.png`, and lay the two out in columns:
-
-    ```` markdown
-    ::: {layout-ncol=2}
-    ![Original: Tversky & Kahneman (1981), Figure 1](images/original-figure.png)
-
-    ```{{r}}
-    # your replication plot here
-    ```
-    :::
-    ````
-
-Whichever you choose, use the same measure, scale, condition order and error-bar meaning for both panels, label which is which, and cite the source of the original values or figure in the caption. If the original reported no variability, say so rather than leaving it out silently.
-:::
+#### Primary analysis
 
 ```{r}
 #| label: fig-comparison
 #| eval: !expr have_data
-#| fig-cap: "Primary unchosen-category effect in original Experiment 1 (Wang et al., 2026, section 3.2) and Pilot B. Points are model-intercept odds ratios for choosing NS+; bars are 95% HPD intervals on log odds, exponentiated. Original points use published estimates; pilot points use posterior medians. Both panels use the same scale. The dashed line is OR = 1. Pilot B checks the pipeline and does not establish a final replication outcome."
+#| fig-cap: "Primary analysis, unchosen-category pairs: original Experiment 1 (Wang et al., 2026, section 3.2) and the Phase 1 replication. Points are model-intercept odds ratios for choosing NS+; bars are 95% HPD intervals on log odds, exponentiated; values are listed on the right. Original: published estimate; replication: posterior median. The dashed line is OR = 1 (no preference); OR < 1 is the predicted avoidance."
 #| fig-width: 8
-#| fig-height: 4
-comparison_plot(`Original: Exp1` = filter(original, pair_type == "unchosen"),
-                `Pilot B` = filter(phase1_estimates, pair_type == "unchosen"))
+#| fig-height: 2
+comparison_plot(Original = original, Replication = phase1_estimates, pair = "unchosen")
+```
+
+#### Secondary analyses
+
+```{r}
+#| label: fig-comparison-chosen
+#| eval: !expr have_data
+#| fig-cap: "Secondary analysis, chosen-category pairs: original Experiment 1 (Wang et al., 2026, section 3.2) and the Phase 1 replication, on the same axis as the primary figure. OR > 1 is the predicted preference."
+#| fig-width: 8
+#| fig-height: 2
+comparison_plot(Original = original, Replication = phase1_estimates, pair = "chosen")
+```
+
+```{r}
+#| label: fig-choice-distribution
+#| eval: !expr have_data
+#| fig-cap: "Per-participant probability of choosing NS+ by pair type, plotted as in Wang et al. (2026), Fig. 2A. Original: Experiment 1 data from OSF xjhkf (N = 123), preprocessed with the same rating and preference-covariate filters as the original analysis code. Phase 1: preference-filtered model trials. Violins show the distribution across participants, boxplots show medians and interquartile ranges (whiskers 1.5 x IQR), and dots are individual participants. The dashed line is 0.5 chance."
+#| fig-width: 8
+#| fig-height: 4.5
+# Original per-participant proportions: generated from the OSF archive by
+# replication-management/prepare_original_fig2.R (row numbers only, no pids).
+fig2_data <- bind_rows(
+  read_csv("original-exp1-fig2.csv", show_col_types = FALSE) |>
+    transmute(Study = "Original: Exp1", pid = as.character(participant), pair_type, p_ns),
+  phase1$model_data |> group_by(pid, pair_type) |>
+    summarise(p_ns = mean(p_ns), .groups = "drop") |> mutate(Study = "Phase 1")) |>
+  mutate(Study = factor(Study, levels = c("Original: Exp1", "Phase 1")),
+         `Pair type` = factor(str_to_title(pair_type), levels = c("Chosen", "Unchosen")))
+ggplot(fig2_data, aes(x = `Pair type`, y = p_ns, colour = `Pair type`)) +
+  geom_violin(aes(fill = `Pair type`), trim = FALSE, alpha = 0.2) +
+  geom_boxplot(width = 0.1, colour = "black", fill = "white", outlier.shape = NA) +
+  geom_jitter(width = 0.15, height = 0, size = 1, alpha = 0.9) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", colour = "grey40") +
+  scale_colour_manual(values = c(Chosen = "#56B4E9", Unchosen = "#E69F00")) +
+  scale_fill_manual(values = c(Chosen = "#56B4E9", Unchosen = "#E69F00")) +
+  facet_wrap(~Study, nrow = 1) +
+  labs(x = "Pair type", y = "P(chose NS+)") +
+  theme_minimal(base_size = 12) +
+  theme(panel.border = element_rect(colour = "black", fill = NA), legend.position = "none")
 ```
 
 ### Exploratory analyses
 
-::: {.callout-tip icon="false"}
-## Guidance
+Following the original authors’ exploratory analyses, I examined response times (RTs), memory performance, and their relationships with adaptive choice.
 
-Any follow-up analyses (optional). Label them clearly as exploratory: they were not planned, so they generate hypotheses rather than test them.
-:::
+Unchosen pairs were not credibly associated with slower responses (RT ratio = 1.03, 95% HPDI [0.98, 1.08]). RT did not credibly predict adaptive choice (OR = 0.97, 95% HPDI [0.89, 1.05]), and there was no credible interaction between RT and pair type (OR = 1.09, 95% HPDI [0.97, 1.22]). However, choices on unchosen pairs were less adaptive (OR = 0.77, 95% HPDI [0.69, 0.86]).
+
+For memory performance, item recognition accuracy was 0.86, associative memory accuracy was 0.78, and the corrected memory score was 0.65. The corrected memory score was not significantly correlated with adaptive choice for either chosen pairs (ρ = −0.02, p = .85) or unchosen pairs (ρ = 0.08, p = .40), and the difference between these correlations was not significant (p = .46).
 
 ```{r}
 #| label: exploratory-rt
@@ -890,7 +844,7 @@ if (length(exploratory_rt_fits)) {
   show_exploratory_table(exploratory_diagnostics,
     paste0("MCMC diagnostics for exploratory models (N = ",
       n_distinct(exploratory_choices$participant_id),
-      "). Estimates require maximum Rhat <= 1.01, minimum effective N >= 400 and zero divergences. Pilot estimates check the pipeline and do not establish final-sample effects."))
+      "). Estimates require maximum Rhat <= 1.01, minimum effective N >= 400 and zero divergences."))
   if (!"Adaptive choice by RT" %in% names(exploratory_rt_fits))
     cat("Adaptive-choice RT model not estimable: insufficient participants, trial types, RT variation, or outcome variation.\n\n")
 } else {
@@ -926,6 +880,194 @@ show_exploratory_table(memory_correlation_difference(memory_choice),
   "Exploratory difference in Spearman correlations (chosen minus unchosen), using the authors' pooled trial-type-label shuffle over available participant-by-type rows: 10,000 permutations, seed 123, raw two-sided permutation tail proportion. Undefined shuffled correlations leave the p-value unavailable.")
 ```
 
+#### Post hoc analyses (not preregistered)
+
+The following post hoc analyses were conducted after inspecting the data and were not preregistered. These analyses are exploratory and hypothesis-generating, and the results should be interpreted cautiously given the number of uncorrected statistical tests.
+
+Median instruction reading times ranged from 7 to 27 seconds per page, with 5-25 participants spending less than 3 seconds on each page. Total instruction reading time was not correlated with the unchosen-item effect (ρ = -0.01).
+
+For attention checks, 81 of 117 participants answered all questions correctly. Attention-check accuracy was not significantly correlated with the unchosen-item effect (ρ = 0.08, p = .41), but was positively correlated with the chosen-item effect (ρ = 0.24, p = .01). Most other engagement measures were not significantly related to the effects, except that longer written explanations were associated with a stronger unchosen-item effect (ρ = -0.21, p = .02).
+
+The unchosen-item effect weakened over the course of the session (OR = 1.07 per 12 trials, 95% HPDI [1.00, 1.15], P(OR > 1) = 0.97), whereas the chosen-item effect remained relatively stable (OR = 1.01, 95% HPDI [0.94, 1.09]). Median response times also decreased from 1,606 ms in the first block of 12 trials to 1,111 ms in the last block.
+
+Finally, reanalyzing the original data using the current analysis criteria showed that both effects remained: the unchosen-item effect (OR = 0.66, 95% HPDI [0.48, 0.89]) and the chosen-item effect (OR = 2.24, 95% HPDI [1.54, 3.14]). These findings suggest that differences in stimuli and data processing do not fully explain the weaker effect observed in the replication.
+
+```{r}
+#| label: posthoc-engagement
+#| dependson: analysis-functions
+#| eval: !expr have_data
+#| results: asis
+# Post hoc (decided after seeing Phase 1 data): instruction reading time, attention
+# checks and other engagement measures, each related to per-participant P(chose NS+)
+# from the model trials.
+spearman <- function(a, b) {
+  ok <- is.finite(a) & is.finite(b)
+  ct <- suppressWarnings(cor.test(a[ok], b[ok], method = "spearman", exact = FALSE))
+  sprintf("rho = %.2f, p = %.3f", ct$estimate, ct$p.value)
+}
+ph_effect <- phase1$model_data |> group_by(participant_id, pair_type) |>
+  summarise(p = mean(p_ns), .groups = "drop") |>
+  pivot_wider(names_from = pair_type, values_from = p, names_prefix = "p_")
+ph_group <- function(d, g, caption) {
+  d |> group_by({{ g }}) |>
+    summarise(N = n(), `Unchosen P(NS+)` = mean(p_unchosen), `Chosen P(NS+)` = mean(p_chosen), .groups = "drop") |>
+    knitr::kable(digits = 3, caption = caption) |> print()
+  cat("\n\n")
+}
+# Instruction reading time, per page
+page_levels <- c("welcome", "ratings", "deliberation", "practice2", "decision_round", "outcomes", "final_choices", "memory")
+ph_instr <- phase1$retained |> filter(task == "instructions") |>
+  mutate(s = as.numeric(rt) / 1000, phase = factor(phase, page_levels))
+ph_instr |> group_by(Page = phase) |>
+  summarise(N = n(), `Median (s)` = median(s), `25th pct (s)` = quantile(s, .25), `75th pct (s)` = quantile(s, .75),
+            `Under 3 s` = sum(s < 3), `Under 5 s` = sum(s < 5), .groups = "drop") |>
+  knitr::kable(digits = 1, caption = "Post hoc: Phase 1 time on each instruction page (N = participants; Under 3 s / Under 5 s = participants below that time).") |> print()
+cat("\n\n")
+ph_reading <- ph_instr |> group_by(participant_id) |>
+  summarise(total_min = sum(s) / 60, fast_pages = sum(s < 5), .groups = "drop") |>
+  left_join(ph_effect, by = "participant_id")
+ph_group(ph_reading |> mutate(Reader = if_else(fast_pages >= 4, "Fast (4 or more pages under 5 s)", "Other")), Reader,
+  "Post hoc: P(chose NS+) for fast and other readers.")
+# Attention checks (all presented checks; missing responses count as incorrect)
+ph_attention <- phase1$attention |> filter(participant_id %in% phase1$keep$participant_id) |>
+  left_join(ph_effect, by = "participant_id")
+ph_group(ph_attention |> mutate(`Attention-check accuracy` = cut(attention_accuracy, c(-Inf, .5, .99, 1),
+    labels = c("50% or less", "51-99%", "100%"))), `Attention-check accuracy`,
+  sprintf("Post hoc: P(chose NS+) by attention-check accuracy. Participants received %d to %d checks (median %d).",
+          min(ph_attention$n_attention_checks), max(ph_attention$n_attention_checks),
+          as.integer(median(ph_attention$n_attention_checks))))
+# Keys pressed on failed attention checks (all participants, and those below the
+# original Experiment 2 accuracy threshold of 10%)
+ph_attention_keys <- phase1$trials |>
+  filter(task == "attention_check", participant_id %in% phase1$keep$participant_id) |>
+  mutate(key = tolower(coalesce(response, "")),
+         correct = key != "" & key != "null" & key == tolower(coalesce(letter, ""))) |>
+  filter(!correct) |>
+  left_join(ph_attention |> select(participant_id, attention_accuracy), by = "participant_id") |>
+  mutate(`Key pressed` = case_when(key %in% c("j", "k") ~ "J or K (choice keys)",
+                                   key %in% c("", "null") ~ "No response",
+                                   .default = "Other key"))
+bind_rows(
+  ph_attention_keys |> mutate(Participants = "All participants"),
+  ph_attention_keys |> filter(attention_accuracy < 0.10) |> mutate(Participants = "Accuracy below 10%")) |>
+  mutate(Participants = factor(Participants, c("All participants", "Accuracy below 10%"))) |>
+  count(Participants, `Key pressed`) |>
+  group_by(Participants) |>
+  mutate(`Failed checks` = n, Share = n / sum(n),
+         People = map_int(Participants, ~ n_distinct(ph_attention_keys$participant_id[
+           if (.x == "All participants") TRUE else ph_attention_keys$attention_accuracy < 0.10]))) |>
+  ungroup() |> select(Participants, People, `Key pressed`, `Failed checks`, Share) |>
+  knitr::kable(digits = 2, caption = "Post hoc: responses on failed attention checks. People = participants with at least one failed check in that group; 10% is the original Experiment 2 exclusion threshold.") |> print()
+cat("
+
+")
+# Other engagement and understanding measures
+ph_rationale <- phase1$retained |> filter(task == "choice_rationale") |>
+  mutate(reason = map_chr(response, ~ tryCatch(as.character(fromJSON(.x)$reason %||% ""), error = function(e) "")),
+         words = str_count(reason, "\\S+")) |>
+  group_by(participant_id) |> summarise(`Words per written reason` = mean(words), .groups = "drop")
+ph_clarity <- phase1$retained |> filter(task == "feedback_likert") |>
+  transmute(participant_id, `Instruction clarity rating (stored 0-4)` =
+              map_dbl(response, ~ as.numeric(fromJSON(.x)$clarity %||% NA)))
+ph_engagement <- phase1$keep |> transmute(participant_id, `Practice misses` = practice_misses) |>
+  left_join(phase1$choices |> group_by(participant_id) |> summarise(`Final-choice timeouts` = sum(timed_out)), by = "participant_id") |>
+  left_join(phase1$retained |> filter(task == "preference_rating") |> group_by(participant_id) |>
+              summarise(`Share of ratings over 8 s` = mean(as.numeric(rt) >= 8000)), by = "participant_id") |>
+  left_join(ph_rationale, by = "participant_id") |> left_join(ph_clarity, by = "participant_id") |>
+  left_join(phase1$retained |> group_by(participant_id) |>
+              summarise(`Duration (min)` = max(as.numeric(time_elapsed), na.rm = TRUE) / 60000), by = "participant_id") |>
+  left_join(ph_reading |> select(participant_id, `Instruction time (min)` = total_min), by = "participant_id") |>
+  left_join(ph_attention |> select(participant_id, `Attention-check accuracy` = attention_accuracy), by = "participant_id") |>
+  left_join(ph_effect, by = "participant_id")
+ph_measures <- setdiff(names(ph_engagement), c("participant_id", "p_chosen", "p_unchosen"))
+map_dfr(ph_measures, function(m) {
+  x <- ph_engagement[[m]]
+  tibble(Measure = m, N = sum(is.finite(x)), Median = median(x, na.rm = TRUE), Min = min(x, na.rm = TRUE),
+         Max = max(x, na.rm = TRUE), `With unchosen P(NS+)` = spearman(x, ph_engagement$p_unchosen),
+         `With chosen P(NS+)` = spearman(x, ph_engagement$p_chosen))
+}) |>
+  knitr::kable(digits = 2, caption = "Post hoc: engagement and understanding measures and their Spearman correlations with per-participant P(chose NS+). These are many tests, uncorrected for multiple comparisons.") |> print()
+cat("\n\n")
+```
+
+```{r}
+#| label: posthoc-order
+#| dependson: analysis-functions
+#| eval: !expr have_data
+#| cache: true
+#| cache.extra: !expr list(id = experiment_id, hashes = tools::md5sum(analysis_input_files[file.exists(analysis_input_files)]), rstanarm = as.character(packageVersion("rstanarm")))
+#| results: asis
+# Post hoc: does choice change across the 48 final choices (fatigue, extinction)?
+# Primary-model formula plus trial position (per 12 trials, centred), fitted separately
+# for unchosen and chosen pairs with the source priors and sampler settings.
+ph_order <- phase1$model_data |>
+  mutate(position = as.numeric(choice_number), position_c = (position - 24.5) / 12,
+         Block = factor(paste0(ceiling(position / 12) * 12 - 11, "-", ceiling(position / 12) * 12),
+                        levels = c("1-12", "13-24", "25-36", "37-48")))
+ph_order |> group_by(participant_id, Block, pair_type) |> summarise(p = mean(p_ns), .groups = "drop") |>
+  group_by(Block, pair_type) |> summarise(p = mean(p), .groups = "drop") |>
+  pivot_wider(names_from = pair_type, values_from = p, names_prefix = "P(NS+) ") |>
+  left_join(phase1$choices |> filter(participant_id %in% phase1$keep$participant_id) |>
+              mutate(Block = factor(paste0(ceiling(as.numeric(choice_number) / 12) * 12 - 11, "-",
+                                           ceiling(as.numeric(choice_number) / 12) * 12),
+                                    levels = c("1-12", "13-24", "25-36", "37-48"))) |>
+              group_by(Block) |> summarise(`Median RT (ms)` = median(rt[!timed_out]), Timeouts = sum(timed_out)),
+            by = "Block") |>
+  knitr::kable(digits = 3, caption = "Post hoc: mean per-participant P(chose NS+), median RT and timeouts by block of 12 final choices.") |> print()
+cat("\n\n")
+ph_position_fits <- list(
+  unchosen = fit_source_model(filter(ph_order, pair_type == "unchosen"),
+    p_ns ~ z_score_norm_drate_by_outcome + position_c + (1 | pid)),
+  chosen = fit_source_model(filter(ph_order, pair_type == "chosen"),
+    p_ns ~ z_score_norm_drate_by_outcome + position_c + (1 | pid)))
+imap_dfr(ph_position_fits, function(fit, type)
+  map_dfr(c("(Intercept)", "position_c"), ~ or_summary(fit, .x) |> mutate(Model = type, Term = .x))) |>
+  transmute(Model, Term = if_else(Term == "position_c", "Trial position (per 12 trials)", "Intercept (at mid-session)"),
+            OR = odds_ratio, `95% HPDI` = format_hpdi(lower, upper), `P(OR < 1)` = posterior_probability_below_one) |>
+  knitr::kable(digits = 3, caption = "Post hoc: primary-model formula with trial position added, fitted separately for unchosen and chosen pairs.") |> print()
+cat("\n\n")
+print(knitr::kable(diagnostics(ph_position_fits), digits = 3, caption = "MCMC diagnostics for the post hoc trial-position models."))
+cat("\n\n")
+```
+
+```{r}
+#| label: posthoc-original-aligned
+#| dependson: analysis-functions
+#| eval: !expr have_data
+#| cache: true
+#| cache.extra: !expr list(hashes = tools::md5sum("original-exp1-aligned-trials.csv"), rstanarm = as.character(packageVersion("rstanarm")))
+#| results: asis
+# Post hoc: the original Experiment 1 data under the replication's standards, with
+# trial flags from replication-management/prepare_original_posthoc.R: missed final
+# choices excluded; cinnamon bun removed (shown, or a participant's deliberation item, in
+# which case that category's trials go); trials from categories whose deliberation pair
+# had a practice response missed or slower than 5 s removed.
+original_aligned <- read_csv("original-exp1-aligned-trials.csv", show_col_types = FALSE) |>
+  filter(!missed, !drop_cinnamon, !drop_practice5) |>
+  mutate(pid = factor(participant), z_score_norm_drate_by_outcome = rating_difference)
+original_aligned_fits <- list(
+  unchosen = fit_source_model(filter(original_aligned, pair_type == "unchosen"),
+    p_ns ~ z_score_norm_drate_by_outcome + (1 | pid)),
+  chosen = fit_source_model(filter(original_aligned, pair_type == "chosen"),
+    p_ns ~ z_score_norm_drate_by_outcome + (1 | pid)))
+bind_rows(
+  original |> transmute(Data = "Original, as published", Model = pair_type, N = as.character(N),
+                        Trials = NA_integer_, OR = odds_ratio, `95% HPDI` = format_hpdi(lower, upper)),
+  imap_dfr(original_aligned_fits, function(fit, type) {
+    d <- filter(original_aligned, pair_type == type)
+    or_summary(fit) |> transmute(Data = "Original, replication standards", Model = type,
+      N = as.character(n_distinct(d$pid)), Trials = nrow(d), OR = odds_ratio, `95% HPDI` = format_hpdi(lower, upper))
+  }),
+  phase1_estimates |> transmute(Data = "Phase 1 replication", Model = pair_type, N = as.character(N),
+    Trials = map_int(pair_type, ~ nrow(filter(phase1$model_data, pair_type == .x))),
+    OR = odds_ratio, `95% HPDI` = format_hpdi(lower, upper))) |>
+  arrange(desc(Model), Data) |>
+  knitr::kable(digits = 3, caption = "Post hoc: original Experiment 1 reanalysed under the replication's standards (missed choices excluded; cinnamon bun removed; 5 s practice window), next to the published estimates and Phase 1. Unchosen and chosen models with the source formula, priors and sampler settings.") |> print()
+cat("\n\n")
+print(knitr::kable(diagnostics(original_aligned_fits), digits = 3, caption = "MCMC diagnostics for the post hoc original-data models."))
+cat("\n\n")
+```
+
 ```{r}
 #| label: data-quality
 #| eval: !expr have_data
@@ -941,86 +1083,95 @@ if (nrow(errors) > 0) {
 
 ### Summary of replication attempt
 
-::: {.callout-tip icon="false"}
-## Guidance
-
-Open with one paragraph summarizing the result of the key analysis and your assessment of whether the original finding replicated, partially replicated, or failed to replicate. Base that judgment on the replication assessment above: the size of the effect relative to the original, not just the p value.
-:::
+This study attempted to replicate the unchosen-item effect reported in Experiment 1 of the original study, with 117 participants compared to 123 in the original. The primary effect was in the predicted direction (OR = 0.84, 95% HPDI [0.63, 1.10]) but was smaller in magnitude than the original estimate (OR = 0.69). The credible interval included both 1 and the original estimate, indicating that the evidence for replication was inconclusive.. Therefore, the primary effect was not successfully replicated, although the results remain compatible with the original effect. The secondary chosen-item effect was replicated (OR = 1.46, 95% HPDI [1.11, 1.93]), although its magnitude was smaller than the original estimate (OR = 2.01).
 
 ### Commentary
 
-::: {.callout-tip icon="false"}
-## Guidance
+The exploratory analyses showed no credible relationship between response time and adaptive choice, and no significant correlation between corrected memory performance and adaptive choice. The post hoc analyses suggested that the unchosen-item effect weakened over the course of the session, while the chosen-item effect remained relatively stable. This pattern may suggest that inferred value is more fragile than directly learned value, or it may reflect general fatigue or disengagement. Response times also decreased across the session, so faster responding may have contributed to the weakening of the effect. Longer written explanations were associated with a stronger unchosen-item effect, potentially suggesting a role for deeper deliberation. This finding was post hoc and should be interpreted cautiously, especially given that other engagement measures were not related to the unchosen-item effect.
 
-Open-ended commentary, none of it long: (a) what the exploratory analyses suggest; (b) what the replication means, for example whether the differences between your study and the original are definitely, plausibly, or unlikely to be moderators of the result; and (c) any objections or challenges raised by you or the original authors.
-:::
+Several methodological differences may have contributed to the weaker effect. Differences in stimuli and data processing seem unlikely to fully explain the results, as reanalysis of the original data using the current criteria preserved both effects. However, the replication used shorter, rewritten instructions that omitted some of the original framing around cautious decision-making and distributed deliberation instructions across practice rounds rather than presenting them all at the beginning. These changes may have affected participants' understanding of the task. Additionally, the preregistered power analysis targeted 80% power, meaning that even if the original effect were present at the assumed magnitude, there would still be approximately a 20% chance of failing to detect it. The original effect size may also have been overestimated, meaning that a larger sample might be needed to reliably detect the true effect.
+
+There were also several challenges in reproducing the original study. Some materials, including the final-decision instructions, title cards, and written-reason prompt, were not archived, preventing an exact reproduction of the procedure. The original paper, code, and data also differed in several aspects, including the stimulus set, exclusion rule, practice response window, attention-check window, memory-test lures, use of signed versus absolute rating differences, and coding of timed-out final choices as selections of the right-side image. These discrepancies were addressed on a case-by-case basis by carefully considering the paper, code, and data and making reasonable adjustments where necessary. However, the decisions made during this process may have introduced methodological differences that influenced the results.
+
+Overall, the replication estimate remains compatible with the original effect, a smaller effect, or no effect, making it difficult to distinguish among these possibilities. A larger follow-up study could help clarify the strength and reliability of the unchosen-item effect.
 
 # Phase 2: Extension
 
-::: {.callout-tip icon="false"}
-## Guidance: choosing your extension
-
-Follow the Extension guidelines page on Canvas. In brief:
-
-- **By default the extension is a best-practices modification of your Phase 1 experiment.** If your replication did not succeed, it is a **rescue**: address the plausible reasons for the failure. If it did succeed, it is an **upgrade**: make the estimate more precise. Typical changes are better or more reliable measurement, more trials, a within-participant design where that is legitimate, comprehension and manipulation checks, clearer instructions, or a larger or better-targeted sample.
-- **If your scientific extension pitch was approved at Milestone 3 and your replication succeeded, propose that instead:** the original conditions rerun unchanged, plus the one added condition or manipulation, with a power analysis for the new comparison.
-- On either track you may add exploratory measures **at the end** of the study.
-- Every change is listed and tagged by category below; everything else stays identical.
-
-State your track on the line below, and delete the others.
-:::
-
-**Track:** Best-practices upgrade / Best-practices rescue / Scientific extension (approved at Milestone 3)
+**Track:** Best-practices rescue
 
 ## Rationale
 
-::: {.callout-tip icon="false"}
-## Guidance
+Phase 1 did not successfully replicate the primary unchosen-item effect, although the effect was in the predicted direction. One possible reason is insufficient statistical power. The original power analysis targeted 80% power, leaving about a 20% chance of missing the effect even if it was present at the assumed magnitude. The original effect size may also have been overestimated, so the true effect could be smaller. Phase 2 may therefore use a larger sample to improve power and obtain a more precise estimate.
 
-One or two paragraphs. For a rescue: what are the plausible reasons Phase 1 did not reproduce the original result, and how does each change address one of them? For an upgrade: where is the Phase 1 estimate least precise or least trustworthy, and how will the changes improve it? For a scientific extension: what question does the added condition answer, and why does it follow from the original finding?
-:::
+Other possible explanations include differences in task instructions, understanding, and engagement. Phase 1 used shorter, rewritten instructions and spread the deliberation instructions across practice rounds, which may have affected how participants understood the task. Phase 2 will more closely follow the original instructions and may add a comprehension check to assess understanding without revealing the hypothesis. In Phase 1, participants who failed attention checks often pressed J or K instead of the displayed letter, suggesting confusion with the choice keys. Phase 2 may add an attention-check practice and apply the original Experiment 2 attention-check exclusion rule. Additional measures of engagement may also be included. Finally, the unchosen-item effect weakened across trials, possibly due to fatigue or less stable inferred values. Phase 2 may address this by reducing the number of trials or examining the effect separately in early and late trials.
 
 ## Changes from Phase 1
 
-::: {.callout-tip icon="false"}
-## Guidance
-
-Every change from the Phase 1 experiment, one per row, each tagged with a category: Measurement, Trials, Design, Checks, Instructions, Sample, Added condition (scientific track only), or Exploratory measure (end of study only). If it is not in this table, it does not change: same materials, wording, procedure, exclusion rule and analysis. The rows below are examples for the demo; replace them with yours.
-:::
+Rows marked Proposed describe changes that have not yet been finalized for Phase 2.
 
 | \# | Category | Phase 1 | Phase 2 | Why |
 |---------------|---------------|---------------|---------------|---------------|
-| 1 | Sample | 27 analysed participants | 300 analysed participants (150 per frame) | Phase 1's interval was too wide to distinguish the original effect from a much smaller one. |
-| 2 | Checks | No comprehension check | After the choice, participants say how many people are at risk (600) | Confirms participants read the scenario; failures are reported, and excluded only if preregistered. |
-| 3 | Exploratory measure | None | At the end: "How confident are you in your choice?" (1–7) | Exploratory only; collected after every confirmatory measure. |
+| 1 | Sample | 117 analysed participants; 118 planned | Proposed: Recruit a larger sample if budget allows; final N TBD | Increase power and obtain a more precise estimate, especially if the true effect is smaller than originally estimated. |
+| 2 | Sample | No specified Prolific approval-rate filter | Proposed: Require a Prolific approval rate of at least 95% | Better match the original study's MTurk recruitment criteria. |
+| 3 | Instructions | Shortened, rewritten instructions that omitted some of the original framing | Use the original instructions with minor formatting changes and typo corrections | Restore the original framing and reduce differences in task understanding. |
+| 4 | Instructions | Deliberation instructions spread across practice rounds | Present all deliberation instructions before the first practice round | Better match the original procedure. |
+| 5 | Instructions | No minimum instruction reading time | Proposed: Add a minimum reading time before participants can continue; duration TBD | Encourage careful reading of the instructions. |
+| 6 | Checks | No comprehension check | Proposed: Add a comprehension check. Incorrect answers return participants to the relevant instruction page for a second attempt. After a second failure: (A) show the correct answer and continue but exclude from analysis, (B) repeat until correct, or (C) end the session. Final option TBD. | Check task understanding without revealing the inferred-value relationship. |
+| 7 | Checks | No attention-check practice before final choices | Proposed: Add an attention-check practice. Incorrect responses trigger a reminder to press the displayed letter rather than J or K, after which participants continue. | Reduce confusion between attention-check keys and choice-response keys. |
+| 8 | Checks | Attention-check failures did not lead to exclusion | Proposed: Apply the original Experiment 2 exclusion rule: exclude participants with accuracy below 10% or nonresponses on more than 90% of attention checks. | Exclude participants showing very low attention-check performance despite practice. |
+| 9 | Measurement | No tab-switch logging | Record tab switches during the task. | Provide an additional measure of participant engagement. |
+| 10 | Checks | No exclusion based on tab switching | Proposed: Exclude participants based on a preregistered tab-switch criterion; threshold TBD. | Identify participants who may have disengaged from the task. |
+| 11 | Trials | Original number of trials | Proposed: Option A: Reduce the number of trials. Option B: Keep the original number of trials and preregister an early-versus-late analysis of the unchosen-item effect. | Option A may reduce fatigue but would provide fewer observations for estimating individual differences and trial-level effects. Option B would allow us to test whether the effect weakens over time without changing the task or reducing the number of observations. |
 
 Everything not listed above is identical to Phase 1.
 
 ## Power and sample
 
-::: {.callout-tip icon="false"}
-## Guidance
+The final sample size for Phase 2 will depend on the available budget. Three approaches are being considered. The first is to target 95% power to detect the original effect using the same power analysis method as the Phase 1 preregistration, which would require 194 participants. The second is to recruit 2.5 times the original sample size (N = 308), which would provide approximately 99% power to detect the original effect. The third is a sequential design with preregistered interim analyses and stopping rules, allowing data collection in batches up to a maximum sample size determined by the budget.
 
-Justify the Phase 2 sample, and **state how you expect the estimate and its precision to compare with Phase 1**. For an upgrade, plan the sample around the confidence interval you want; for a rescue, around the power to detect the original effect, or the smallest effect you would still consider a successful replication; for a scientific extension, around the power to detect the new comparison. Set `phase2_n_per_group` in the code below; the table uses Phase 1's estimate if you have it and the original's otherwise.
-:::
+A larger sample is expected to provide a more precise estimate than Phase 1, with the interval width decreasing to approximately 78% of the Phase 1 width at N = 194 and 62% at N = 308. However, if the true effect is closer to the smaller Phase 1 estimate (OR = 0.84), even 308 participants would provide only about 53% power, and approximately 600 participants would be needed to detect it reliably. The sequential approach may offer more flexibility under budget constraints. The final sample size and, if applicable, stopping rules will be decided and preregistered before data collection.
 
 ```{r}
 #| label: phase2-power
-# Phase2 design/sample have not been selected. Do not retain the demo's
-# invented150-per-group plan or power based on a three-person pilot effect.
+# Candidate Phase 2 sample sizes named in the text (final N follows the budget):
+# 194 = 95% power with the Phase 1 preregistration's method (original authors' one-sample
+# t-test approximation, original Exp 1 d); 308 = 2.5 x the original N; 600 for reference.
+# Model-based columns: normal approximation that scales the primary model's log-OR posterior
+# SD by sqrt(N_basis / N) (Phase 1 posterior if fitted, else the original HPDI).
 phase2_planned_n <- NA_integer_
-tibble(`Phase2 planned N` = phase2_planned_n) |> knitr::kable(na = "Not specified")
+phase2_candidate_n <- c(194L, 308L, 600L)
+if (!is.null(phase1_fits)) {
+  basis_draws <- as.matrix(phase1_fits$unchosen)[, "(Intercept)"]
+  basis <- list(label = "Phase 1", n = attr(phase1_fits, "N"), sd = sd(basis_draws), or = exp(median(basis_draws)))
+} else {
+  basis <- list(label = "original", n = original_n, or = original$odds_ratio[original$pair_type == "unchosen"],
+    sd = (log(original$upper[original$pair_type == "unchosen"]) - log(original$lower[original$pair_type == "unchosen"])) / (2 * qnorm(0.975)))
+}
+approx_power <- function(or, n) pnorm(abs(log(or)) / (basis$sd * sqrt(basis$n / n)) - qnorm(0.975))
+tibble(N = phase2_candidate_n) |>
+  mutate(`Power for original effect (t-test method)` = map_dbl(N, ~ pwr::pwr.t.test(d = original_d, n = .x,
+           sig.level = 0.05, type = "one.sample", alternative = "two.sided")$power),
+         `Power for original OR 0.69 (model-based)` = approx_power(0.69, N),
+         `Power for Phase 1 OR (model-based)` = approx_power(basis$or, N),
+         `Interval width relative to Phase 1` = sqrt(basis$n / N)) |>
+  mutate(across(starts_with("Power"), ~ scales::percent(.x, accuracy = 0.1)),
+         `Interval width relative to Phase 1` = round(`Interval width relative to Phase 1`, 2)) |>
+  knitr::kable(caption = sprintf(paste0(
+    "Candidate Phase 2 sample sizes. t-test method: the original authors' one-sample t-test approximation used for the ",
+    "Phase 1 preregistration (d = %.3f). Model-based: the primary model's log-odds posterior SD (%.3f at N = %d, %s) ",
+    "scaled by the square root of N; power is the probability that the 95%% interval excludes OR = 1. %s OR = %.2f."),
+    original_d, basis$sd, basis$n, basis$label, basis$label, basis$or))
 ```
 
 ## Analysis plan
 
-::: {.callout-tip icon="false"}
-## Guidance
+The primary analysis will follow the same approach as Phase 1, using a multilevel Bayesian logistic regression on unchosen-category trials, with the rating covariate and a participant random intercept. The model will be fitted to Phase 2 data alone, and the effect will be reported as an odds ratio (OR) with a 95% HPDI. The secondary analyses will include the chosen-category model and the combined model, as in Phase 1.
 
-The confirmatory analysis for Phase 2, written before Phase 2 data collection. On the best-practices tracks this is normally the same key test as Phase 1, run on the Phase 2 data alone; say whether you will also report a pooled estimate across phases, and label it exploratory if so. On the scientific track, specify the test for the new comparison. Name the exclusion rule (unchanged unless it is in the Changes table) and list any exploratory measures.
+The same exclusion rules from Phase 1 will apply: sessions will end if participants miss the repeated practice choice, and incomplete sessions will be excluded. Phase 2 will also adopt the original Experiment 2 attention-check exclusion rule, excluding participants with accuracy below 10% or nonresponses on more than 90% of attention checks. Additional exclusion criteria based on comprehension-check failures or tab switching may be added.
 
-Run Phase 2 under a new `EXPERIMENT.id` in `experiment.js` (for example `smith2016-phase2`) and set `experiment_id_phase2` at the top of this file to match, so the two phases' data never mix.
-:::
+If the original number of trials is retained, an additional analysis may test whether the unchosen-item effect changes between early and late trials by including trial position as a predictor. If a sequential sampling approach is selected, the timing of interim analyses, stopping criteria, and maximum sample size will be preregistered before data collection.
+
+I will also report an exploratory pooled estimate combining Phase 1 and Phase 2 data. Additional exploratory analyses may examine response times and memory performance.
 
 ## Results
 
