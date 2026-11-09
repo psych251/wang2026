@@ -1,0 +1,16 @@
+{
+  "experiment_id": "wang2026-exp1-pilot-b",
+  "exported_at": "2026-10-28T04:19:38.835Z",
+  "collection_status": "Recruitment ongoing; interim snapshot (confirmed by student).",
+  "recorded_sessions": 8,
+  "distinct_prolific_visitors": 6,
+  "distinct_consented_visitors": 6,
+  "distinct_completed_visitors": 5,
+  "distinct_consented_unfinished_visitors": 1,
+  "visitors_with_multiple_sessions": 2,
+  "basis": "Aggregate reconciliation of the private identifiers.csv; no Prolific or session identifiers are included here.",
+  "participants_csv_sha256": "fab12782d97624cc4429b91726e786653ae79c63208500f6b0e385db8c6be3bb",
+  "trials_csv_sha256": "0851cf70d801956c7603f559f51d03ea6c3f1e9751aaa4725dd48c71732fae54",
+  "participants_csv_md5": "6d0b538bec92bd6921e76d35fea59e2a",
+  "trials_csv_md5": "3a601daff0541e5f4d48682a9273f90c"
+}
